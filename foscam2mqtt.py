@@ -44,8 +44,25 @@ parser.add_argument('--ha-camera-name', default='Foscam VD1', help='Friendly nam
 parser.add_argument('--ha-cleanup', action=ap.BooleanOptionalAction, help='Remove HA sensor config on exit (default: false)')
 parser.add_argument('-q', '--quiet', action=ap.BooleanOptionalAction, help='Do not show warning messages (default: false)')
 parser.add_argument('-v', '--verbose', action='count', help='Show verbose output (repeat up to 3 times to increase verbosity)')
+parser.add_argument('-l', '--log-level', choices=['debug','info','warning','error','critical'], default='warnint', help='Log level (default: warning)')
 parser.add_argument('--date-format', type=str, default='%Y-%m-%dT%H:%M:%SZ', help='Date/time format for logging (strftime template)')
 args=parser.parse_args()
+
+## Enable logging
+log = logging.getLogger('foscam2mqtt')
+log.setLevel(getattr(logging, log_level.upper()))
+
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+# create formatter
+formatter = logging.Formatter(fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt=args.date_format)
+
+# add formatter to ch
+ch.setFormatter(formatter)
+
+# add ch to logger
+logger.addHandler(ch)
 
 if not args.verbose:
     args.verbose = 0
