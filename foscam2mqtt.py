@@ -5,6 +5,8 @@ from waitress.server import create_server
 import paho.mqtt.client as mqtt
 import paho.mqtt.publish as mqtt_publish
 
+import logging
+
 from base64 import b64encode as b64enc
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -58,6 +60,7 @@ class Foscam2MQTT:
         # Own settings
         self.actions = 'button','motion','sound','face','human' #,'alarm'
         self.listen_url = listen_url
+        self.paranoid = False
         self.obfuscate = obfuscate
         if self.obfuscate:
             self.action_keys = dict()
@@ -391,7 +394,7 @@ def webhook():
     foscam.mqtt_publish('action', action)
     foscam.snapshot(publish = True)
 
-    if foscam.paranoid:
+    if foscam.obfuscate and foscam.paranoid:
         if args.verbose >= 2: print(date_time + ' VV  Paranoid enabled, cycling webhooks')
         foscam.update_hooks()
 
