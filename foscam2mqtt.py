@@ -42,38 +42,41 @@ parser.add_argument('--ha-discovery', action=ap.BooleanOptionalAction, help='Ena
 parser.add_argument('--ha-discovery-topic', default='homeassistant', help='MQTT topic to publish HA discovery information to (default: homeassistant)')
 parser.add_argument('--ha-camera-name', default='Foscam VD1', help='Friendly name of the entities to publish in HA (default: Foscam VD1)')
 parser.add_argument('--ha-cleanup', action=ap.BooleanOptionalAction, help='Remove HA sensor config on exit (default: false)')
-parser.add_argument('-q', '--quiet', action=ap.BooleanOptionalAction, help='Do not show warning messages (default: false)')
-parser.add_argument('-v', '--verbose', action='count', help='Show verbose output (repeat up to 3 times to increase verbosity)')
-parser.add_argument('-l', '--log-level', choices=['debug','info','warning','error','critical'], default='warnint', help='Log level (default: warning)')
-parser.add_argument('--date-format', type=str, default='%Y-%m-%dT%H:%M:%SZ', help='Date/time format for logging (strftime template)')
-args=parser.parse_args()
+parser.add_argument('--quiet', action=ap.BooleanOptionalAction, help='Only show error and critical messages in console (default: false)')
+parser.add_argument('--log-level', choices=['debug','info','warning','error'], default='warning', help='Log level (default: warning)')
+parser.add_argument('--date-format', type=str, default='%Y-%m-%d %H:%M:%S', help='Date/time format for logging (strftime template)')
+config=parser.parse_args()
 
 ## Enable logging
+log_level = getattr(logging, config.log_level.upper())
+log_file = '/log/foscam2mqtt_' + dt.strftime(dt.now(), '%Y%m%d_%H%M%S') + '.log'
+log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+log_date_format = config.date_format
+logging.basicConfig(filename=log_file, filemode='w', level=log_level, format=log_format, datefmt=log_date_format)
+formatter = logging.Formatter(fmt=log_format, datefmt=log_date_format)
+
 log = logging.getLogger('foscam2mqtt')
-log.setLevel(getattr(logging, log_level.upper()))
+#log.setFormatter(formatter)
+log.setLevel(log_level)
 
+# Create console handler
 ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-
-# create formatter
-formatter = logging.Formatter(fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt=args.date_format)
-
-# add formatter to ch
 ch.setFormatter(formatter)
 
-# add ch to logger
-logger.addHandler(ch)
+# If quiet is set, only log error and critical to console
+if config.quiet:
+    ch.setLevel(logging.ERROR)
+else:
+    ch.setLevel(log_level)
 
-if not args.verbose:
-    args.verbose = 0
+# Add ch to logger
+log.addHandler(ch)
 
-if args.verbose:
-    date_time = dt.strftime(dt.now(), args.date_format)
-    print(date_time + ' V   Verbose output enabled')
-    print(date_time + ' V   Listening on ' + args.listen_address + ':' + str(args.listen_port))
+log.info('Log level: ' + config.log_level.upper())
+log.info('Listening on ' + config.listen_address + ':' + str(config.listen_port))
 
 class Foscam2MQTT:
-    def __init__(self, listen_url = None, obfuscate = False, paranoid = False, quiet = False, verbose = False):
+    def __init__(self, listen_url = None, obfuscate = False, paranoid = False, quiet = False):
         # Own settings
         self.actions = 'button','motion','sound','face','human' #,'alarm'
         self.listen_url = listen_url
@@ -103,10 +106,7 @@ class Foscam2MQTT:
         self.ha_discovery_topic = 'homeassistant'
         self.ha_camera_name = 'Foscam VD1'
 
-        self.verbose = verbose
-        if self.verbose:
-            date_time = dt.strftime(dt.now(), self.date_format)
-            print(date_time + ' V   Foscam2MQTT initialized')
+        log.info('Foscam2MQTT initialized')
 
     def verify_action(self, action):
         if self.obfuscate and action in (self.action_keys.keys()):
@@ -126,18 +126,18 @@ class Foscam2MQTT:
             response.raise_for_status()
         except requests.exceptions.HTTPError as errh:
             if response.status_code == 404:
-                print('Remote server returned HTTP error code 404')
+                log.warning('Remote server returned HTTP error code 404')
             else:
-                print(errh)
+                log.warning(errh)
             return False
         except req.exceptions.ConnectionError as errc:
-            print(errc)
+            log.warning(errc)
             return False
         except req.exceptions.Timeout as errt:
-            print(errt)
+            log.warning(errt)
             return False
         except req.exceptions.RequestException as err:
-            print(err)
+            log.warning(err)
             return False
         if return_response: return response.content
 
@@ -152,8 +152,8 @@ class Foscam2MQTT:
 
     def update_hooks(self):
         if self.listen_url is None:
-            print('Assuming default listen url')
             self.listen_url = 'http://localhost:5000/'
+            log.debug('Assuming default listen url: ' + self.listen_url)
         action_aliases = dict({'button':'BKLinkUrl','motion':'MDLinkUrl','sound':'SDLinkUrl','face':'FaceLinkUrl','human':'HumanLinkUrl'}) #,'alarm':'AlarmUrl'})
         # If an action_name was specified, only update that one.
         foscam_options = dict()
@@ -166,9 +166,7 @@ class Foscam2MQTT:
             else:
                 action = action_name
             action_url = self.listen_url + '?action=' + action
-            if self.verbose >= 3:
-                date_time = dt.strftime(dt.now(), self.date_format)
-                print(date_time + ' VVV Generated URL for ' + action_name + ' - ' + action_url)
+            log.debug('Generated URL for ' + action_name + ' - ' + action_url)
             encoded_url = b64enc(action_url.encode('ascii'))
             foscam_options[alias] = encoded_url.decode('ascii')
         self.invoke_foscam(cmd = 'setAlarmHttpServer', options = foscam_options, return_response = True)
@@ -178,8 +176,7 @@ class Foscam2MQTT:
         return main_topic + '/' + sub_topic
 
     def mqtt_init(self, host, port = 1883, ssl = False, username = None, password = None, client_id = 'foscam2mqtt', topic = 'foscam2mqtt', camera_name = 'Foscam VD1'):
-        date_time = dt.strftime(dt.now(), self.date_format)
-        if self.verbose: print(date_time + ' V   Initializing MQTT client with ID ' + client_id)
+        log.info('Initializing MQTT client with ID ' + client_id)
         self.mqtt_client_id = client_id
         self.mqtt_client = mqtt.Client(protocol=mqtt.MQTTv311, client_id = client_id, clean_session = False)
 
@@ -187,7 +184,7 @@ class Foscam2MQTT:
         self.mqtt_port = port
 
         self.mqtt_topic = topic
-        if self.verbose: print(date_time + ' V   MQTT base topic is ' + topic)
+        log.info('MQTT base topic is ' + topic)
 
         self.mqtt_settings = {
             'protocol':  mqtt.MQTTv311,
@@ -204,59 +201,52 @@ class Foscam2MQTT:
 
         if self.ha_discovery:
             self.ha_camera_name = camera_name
-            if self.verbose: print(date_time + ' V   Camera name is ' + self.ha_camera_name)
+            log.info('Camera name is ' + self.ha_camera_name)
 
         self.mqtt_client.on_connect = self.mqtt_on_connect
         self.mqtt_client.on_message = self.mqtt_on_message
 
-        date_time = dt.strftime(dt.now(), self.date_format)
-        if self.verbose: print(date_time + ' V   Connect to MQTT broker ' + self.mqtt_host + ':' + str(self.mqtt_port))
+        log.info('Connect to MQTT broker ' + self.mqtt_host + ':' + str(self.mqtt_port))
         self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
 
-        # Publish this one before creating callback to prevent recursive loop
-        self.mqtt_publish('verbosity', self.verbose)
-
-        if self.verbose >= 2: print(date_time + ' VV  Add callback for topic ' + self.mqtt_gen_topic('verbosity'))
-        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('verbosity'), self.mqtt_on_verbosity_update)
-
-        if self.verbose >= 2: print(date_time + ' VV  Add callback for topic ' + self.mqtt_gen_topic('hooks_update'))
+        log.debug('Add callback for topic ' + self.mqtt_gen_topic('hooks_update'))
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('hooks_update'), self.mqtt_on_hooks_update)
 
-        if self.verbose >= 2: print(date_time + ' VV  Add callback for topic ' + self.mqtt_gen_topic('snapshot_update'))
+        log.debug('Add callback for topic ' + self.mqtt_gen_topic('snapshot_update'))
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('snapshot_update'), self.mqtt_on_snapshot_update)
 
     def mqtt_disconnect(self):
-        date_time = dt.strftime(dt.now(), self.date_format)
-        if self.verbose >= 2: print(date_time + ' VV  Publish 0 to topic ' + self.mqtt_gen_topic('state'))
+        log.debug('Publish 0 to topic ' + self.mqtt_gen_topic('state'))
         self.mqtt_publish('state', 0)
-        if self.verbose: print(date_time + ' V   Disconnect')
+        log.info('Disconnect')
         self.mqtt_client.disconnect()
 
     def mqtt_publish(self, topic, payload, time_to_action = False, qos = 0, retain = True):
         if not self.mqtt_client:
-            date_time = dt.strftime(dt.now(), self.date_format)
-            print(date_time + ' E   MQTT not initialized, run self.mqtt_init first!')
+            log.error('MQTT not initialized, run self.mqtt_init first!')
             return False
+
         topic = self.mqtt_gen_topic(topic)
-        date_time = dt.strftime(dt.now(), self.date_format)
+
         self.mqtt_client.publish(topic, payload, qos = qos, retain = retain)
-        if self.verbose >= 2:
+
+        if log.level <= logging.DEBUG:
             if type(payload) is int:
                 payload = str(payload)
             elif type(payload) is bytes:
                 payload = 'of ' + str(len(payload)) + ' bytes'
             else:
                 payload = 'of type ' + type(payload).__name__
-            print(date_time + ' VV  Published payload ' + payload + ' to topic ' + topic)
+            log.debug('Published payload ' + payload + ' to topic ' + topic)
+
         if time_to_action and type(payload) is str:
             topic = self.mqtt_gen_topic(payload)
+            date_time = dt.strftime(dt.now(), self.date_format)
             self.mqtt_client.publish(topic, date_time, qos = qos, retain = True)
 
     def mqtt_gen_ha_entity(self, action, type, availability_topic, name = 'Foscam VD1', device = None, icon = 'mdi:doorbell-video'):
         unique_id = self.mqtt_topic + '_' + action
-        if self.verbose >= 2:
-            date_time = dt.strftime(dt.now(), self.date_format)
-            print(date_time + ' VV  Generated unique_id ' + unique_id)
+        log.debug('enerated unique_id ' + unique_id)
 
         config_topic = self.ha_discovery_topic + '/' + type + '/' + unique_id + '/config'
 
@@ -280,12 +270,12 @@ class Foscam2MQTT:
             entity['t'] = self.mqtt_gen_topic(action)
             entity['val_tpl'] = '{{ value }}'
         else:
-            print(date_time + ' W   Unknown entity type ' + type + ', unable to generate autodiscovery config.')
+            log.warning('Unknown entity type ' + type + ', unable to generate autodiscovery config.')
             return False
 
         if device is not None: entity['dev'] = device
         entity_json = json_dumps(entity)
-        if self.verbose >= 3: print(date_time + ' VVV ' + action + ' entity_json ' + entity_json)
+        log.debug(action + ' entity_json ' + entity_json)
 
         msg = {
             'topic': config_topic,
@@ -321,55 +311,43 @@ class Foscam2MQTT:
     # The callback for when the client receives a CONNACK response from the server.
     def mqtt_on_connect(self, client, userdata, flags, rc):
         # Do this in on_connect so they will be re-subscribed on a reconnect
-        if self.verbose:
-            date_time = dt.strftime(dt.now(), self.date_format)
-            print(date_time + ' V   MQTT Connected')
+        log.info('MQTT Connected')
 
         client.subscribe(self.mqtt_gen_topic('hooks_update'))
         client.subscribe(self.mqtt_gen_topic('snapshot_update'))
-        client.subscribe(self.mqtt_gen_topic('verbosity'))
 
-        if self.verbose >= 2: print(date_time + ' VV  Publish 1 to topic ' + self.mqtt_gen_topic('state'))
+        log.debug('Publish 1 to topic ' + self.mqtt_gen_topic('state'))
         self.mqtt_publish('state', 1)
 
     # The callback for when a PUBLISH message is received from the server.
     def mqtt_on_message(self, client, userdata, msg):
-        date_time = dt.strftime(dt.now(), self.date_format)
-        if self.verbose >= 2: print(date_time + ' VV  MQTT message received ' + msg.topic + ' ' + str(msg.payload))
-
-    def mqtt_on_verbosity_update(self, client, userdata, msg):
-        date_time = dt.strftime(dt.now(), self.date_format)
-        self.verbose = int(msg.payload)
-        if self.verbose: print(date_time + ' V   Verbosity level changed to ' + str(self.verbose))
+        log.debug('MQTT message received ' + msg.topic + ' ' + str(msg.payload))
 
     def mqtt_on_hooks_update(self, client, userdata, msg):
-        date_time = dt.strftime(dt.now(), self.date_format)
-        if self.verbose >= 2: print(date_time + ' VV  Topic hooks_update was triggered')
+        log.debug('Topic hooks_update was triggered')
         self.update_hooks()
 
     def mqtt_on_snapshot_update(self, client, userdata, msg):
-        date_time = dt.strftime(dt.now(), self.date_format)
-        if self.verbose >= 2: print(date_time + ' VV  Topic snapshot_update was triggered')
+        log.debug('Topic snapshot_update was triggered')
         self.snapshot(publish = True)
 
-foscam = Foscam2MQTT(listen_url = args.listen_url, obfuscate = args.obfuscate, paranoid = args.paranoid, verbose = args.verbose)
-foscam.date_format = args.date_format
-foscam.foscam_host = args.foscam_host
-foscam.foscam_port = args.foscam_port
-foscam.foscam_user = args.foscam_user
-foscam.foscam_pass = args.foscam_pass
+foscam = Foscam2MQTT(listen_url = config.listen_url, obfuscate = config.obfuscate, paranoid = config.paranoid)
+foscam.date_format = config.date_format
+foscam.foscam_host = config.foscam_host
+foscam.foscam_port = config.foscam_port
+foscam.foscam_user = config.foscam_user
+foscam.foscam_pass = config.foscam_pass
 foscam.update_hooks()
 
-date_time = dt.strftime(dt.now(), args.date_format)
-if args.mqtt_user:
-    if args.verbose: print(date_time + ' V   initialize MQTT with user/pass')
-    foscam.mqtt_init(host = args.mqtt_host, port = args.mqtt_port, client_id = args.mqtt_client_id, topic = args.mqtt_topic, username = args.mqtt_user, password = args.mqtt_pass)
+if config.mqtt_user:
+    log.debug('Initialize MQTT with user/pass')
+    foscam.mqtt_init(host = config.mqtt_host, port = config.mqtt_port, client_id = config.mqtt_client_id, topic = config.mqtt_topic, username = config.mqtt_user, password = config.mqtt_pass)
 else:
-    if args.verbose: print(date_time + ' V   initialize MQTT without user/pass')
-    foscam.mqtt_init(host = args.mqtt_host, port = args.mqtt_port, client_id = args.mqtt_client_id, topic = args.mqtt_topic)
+    log.debug('Initialize MQTT without user/pass')
+    foscam.mqtt_init(host = config.mqtt_host, port = config.mqtt_port, client_id = config.mqtt_client_id, topic = config.mqtt_topic)
 
-if args.ha_discovery:
-    foscam.ha_discovery_topic = args.ha_discovery_topic
+if config.ha_discovery:
+    foscam.ha_discovery_topic = config.ha_discovery_topic
     foscam.mqtt_publish_ha_entities()
 
 # Create snapshot for starters
@@ -382,7 +360,6 @@ app = Flask(__name__)
 
 @app.route('/', methods=['GET', 'PUT', 'POST'])
 def webhook():
-    date_time = dt.strftime(dt.now(), args.date_format)
     ct = req.content_type
     if req.method == 'GET':
         req_args = req.args
@@ -391,49 +368,47 @@ def webhook():
     elif req.method == 'POST' and ct == 'application/json':
         req_args = req.json
 
+    date_time = dt.strftime(dt.now(), foscam.date_format)
+
     if 'action' in req_args:
         action = req_args['action']
     else:
-        if not args.quiet: print(date_time + ' W   No action specified - ' + req.remote_addr)
+        log.warning('No action specified - ' + req.remote_addr)
         response = date_time + ' ERROR - no action specified'
         return res(response=response, status=400)
 
     verified_action = foscam.verify_action(action)
     if not verified_action:
-        if not args.quiet: print(date_time + ' W   Unknown action ' + action + ' - ' + req.remote_addr)
+        log.warning('Unknown action ' + action + ' - ' + req.remote_addr)
         response = date_time + ' ERROR - unknown action'
         return res(response = response, status = 400)
     else:
         action = verified_action
 
-    if args.verbose: print(date_time + ' V   ' + req.method + ' ' + action + ' - ' + req.remote_addr)
+    log.info(req.method + ' ' + action + ' - ' + req.remote_addr)
 
     foscam.mqtt_publish('action', action)
     foscam.snapshot(publish = True)
 
     if foscam.obfuscate and foscam.paranoid:
-        if args.verbose >= 2: print(date_time + ' VV  Paranoid enabled, cycling webhooks')
+        log.info('Paranoid enabled, cycling webhooks')
         foscam.update_hooks()
 
     response = date_time + ' OK'
     return res(response = response, status = 200)
 
 def on_signal(x, y):
-    if args.verbose:
-        date_time = dt.strftime(dt.now(), args.date_format)
-        print('\n' + date_time + ' V ' + Signals(x).name + ' received')
+    log.debug(Signals(x).name + ' received')
     app_server.close()
 
 signal(SIGTERM, on_signal)
 signal(SIGINT, on_signal)
 
-app_server = create_server(app, host = args.listen_address, port = args.listen_port)
+app_server = create_server(app, host = config.listen_address, port = config.listen_port)
 try:
     app_server.run()
 except OSError:
-    if args.verbose >= 2:
-        date_time = dt.strftime(dt.now(), args.date_format)
-        print(date_time + ' VV  Caught expected error on process termination')
+    log.debug('Caught expected error on process termination')
 
 # Set state to unavailable
 foscam.mqtt_disconnect()

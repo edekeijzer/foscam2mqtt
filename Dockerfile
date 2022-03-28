@@ -1,7 +1,8 @@
 FROM python:alpine
 
 RUN python3 -m pip install flask waitress paho-mqtt requests xmltodict && \
-    python3 -m pip uninstall --yes setuptools wheel pip
+    python3 -m pip uninstall --yes setuptools wheel pip && \
+    mkdir /log
 
 COPY foscam2mqtt.py /foscam2mqtt.py
 
