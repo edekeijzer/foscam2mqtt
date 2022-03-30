@@ -7,10 +7,11 @@ import paho.mqtt.publish as mqtt_publish
 
 import logging
 
-from base64 import b64encode as b64enc
+from base64 import b64encode as b64enc, b64decode as b64dec
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+from urllib.parse import unquote
 from json import loads as json_loads, dumps as json_dumps, JSONDecodeError
 from xmltodict import parse as xmlparse
 
@@ -141,28 +142,36 @@ class Foscam2MQTT:
             return False
         if return_response: return response.content
 
-    def snapshot(self, publish = False):
+    def snapshot(self):
         snapshot = self.invoke_foscam(cmd = 'snapPicture2', return_response = True)
-        if publish:
-            date_time = dt.strftime(dt.now(), self.date_format)
-            self.mqtt_publish('snapshot', snapshot)
-            self.mqtt_publish('snapshot_datetime', date_time)
-        else:
-            return snapshot
+        return snapshot
 
-    def update_hooks(self):
+    def update_hooks(self, triggered_action = None):
         if self.listen_url is None:
             self.listen_url = 'http://localhost:5000/'
             log.debug('Assuming default listen url: ' + self.listen_url)
         action_aliases = dict({'button':'BKLinkUrl','motion':'MDLinkUrl','sound':'SDLinkUrl','face':'FaceLinkUrl','human':'HumanLinkUrl'}) #,'alarm':'AlarmUrl'})
         # If an action_name was specified, only update that one.
         foscam_options = dict()
+        alarm_urls = xmlparse(self.invoke_foscam(cmd='getAlarmHttpServer', return_response=True))['CGI_Result']
+
         for action_name, alias in action_aliases.items():
             if self.obfuscate:
-                rnd.seed()
-                random_string = ''.join(rnd.choices(string.ascii_uppercase + string.ascii_lowercase + string.digits, k=24))
-                self.action_keys[random_string] = action_name
-                action = random_string
+                if triggered_action is None or triggered_action == action_name:
+                    rnd.seed()
+                    random_string = ''.join(rnd.choices(string.ascii_uppercase + string.ascii_lowercase + string.digits, k=24))
+                    self.action_keys[random_string] = action_name
+                    action = random_string
+                else:
+                    alarm_url_enc = unquote(alarm_urls[alias])
+                    alarm_url_byte = b64dec(alarm_url_enc)
+                    alarm_url = alarm_url_byte.decode('ascii')
+                    log.debug('Retrieved existing URL for action ' + action + ': ' + alarm_url)
+                    if self.listen_url in alarm_url:
+                        action = alarm_url.replace((self.listen_url + '?action='), '')
+                        log.debug('Extracted action: ' + action)
+                    else:
+                        action = 'none'
             else:
                 action = action_name
             action_url = self.listen_url + '?action=' + action
@@ -209,19 +218,22 @@ class Foscam2MQTT:
         log.info('Connect to MQTT broker ' + self.mqtt_host + ':' + str(self.mqtt_port))
         self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
 
-        log.debug('Add callback for topic ' + self.mqtt_gen_topic('hooks_update'))
-        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('hooks_update'), self.mqtt_on_hooks_update)
+        log.debug('Add callback for topic ' + self.mqtt_gen_topic('hooks/update'))
+        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('hooks/update'), self.mqtt_on_hooks_update)
 
-        log.debug('Add callback for topic ' + self.mqtt_gen_topic('snapshot_update'))
-        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('snapshot_update'), self.mqtt_on_snapshot_update)
+        log.debug('Add callback for topic ' + self.mqtt_gen_topic('snapshot/update'))
+        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('snapshot/update'), self.mqtt_on_snapshot_update)
+
+        log.debug('Add callback for topic ' + self.mqtt_gen_topic('ring_volume/set'))
+        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('ring_volume/set'), self.mqtt_on_ring_volume_set)
 
     def mqtt_disconnect(self):
-        log.debug('Publish 0 to topic ' + self.mqtt_gen_topic('state'))
-        self.mqtt_publish('state', 0)
+        log.debug('Publish 0 to topic ' + self.mqtt_gen_topic('$state'))
+        self.mqtt_publish('$state', 0)
         log.info('Disconnect')
         self.mqtt_client.disconnect()
 
-    def mqtt_publish(self, topic, payload, time_to_action = False, qos = 0, retain = True):
+    def mqtt_publish(self, topic, payload, qos = 0, retain = True):
         if not self.mqtt_client:
             log.error('MQTT not initialized, run self.mqtt_init first!')
             return False
@@ -235,45 +247,36 @@ class Foscam2MQTT:
                 payload = str(payload)
             elif type(payload) is bytes:
                 payload = 'of ' + str(len(payload)) + ' bytes'
-            else:
+            elif type(payload) is not str:
                 payload = 'of type ' + type(payload).__name__
             log.debug('Published payload ' + payload + ' to topic ' + topic)
 
-        if time_to_action and type(payload) is str:
-            topic = self.mqtt_gen_topic(payload)
-            date_time = dt.strftime(dt.now(), self.date_format)
-            self.mqtt_client.publish(topic, date_time, qos = qos, retain = True)
-
-    def mqtt_gen_ha_entity(self, action, type, availability_topic, name = 'Foscam VD1', device = None, icon = 'mdi:doorbell-video'):
+    def mqtt_gen_ha_entity(self, action, entity_type, availability_topic, name = None, params = None, device = None, icon = 'mdi:help-box'):
         unique_id = self.mqtt_topic + '_' + action
-        log.debug('enerated unique_id ' + unique_id)
+        log.debug('Generated unique_id ' + unique_id)
 
-        config_topic = self.ha_discovery_topic + '/' + type + '/' + unique_id + '/config'
+        if not name:
+            name = self.ha_camera_name + ' ' + action
 
+        config_topic = self.ha_discovery_topic + '/' + entity_type + '/' + unique_id + '/config'
+
+        # Create generic base
         entity = {
             'uniq_id': unique_id,
             'obj_id': unique_id,
             'name': name,
-            'ic': icon,
-            'avty_t': self.mqtt_gen_topic('state'),
+            'avty_t': self.mqtt_gen_topic('$state'),
             'pl_avail': 1,
             'pl_not_avail': 0,
         }
 
-        if type == 'binary_sensor':
-            entity['stat_t'] = self.mqtt_gen_topic(action)
-            entity['val_tpl'] = '{{ value }}'
-        elif type == 'sensor':
-            entity['stat_t'] = self.mqtt_gen_topic(action)
-            entity['val_tpl'] = '{{ value }}'
-        elif type == 'camera':
-            entity['t'] = self.mqtt_gen_topic(action)
-            entity['val_tpl'] = '{{ value }}'
-        else:
-            log.warning('Unknown entity type ' + type + ', unable to generate autodiscovery config.')
-            return False
+        # Add icon except for specific types
+        if entity_type not in ['device_trigger']: entity['ic'] = icon
 
-        if device is not None: entity['dev'] = device
+        # Add type specific params if specified
+        if params: entity.update(params)
+
+        if device: entity['dev'] = device
         entity_json = json_dumps(entity)
         log.debug(action + ' entity_json ' + entity_json)
 
@@ -298,14 +301,65 @@ class Foscam2MQTT:
             'sw_version': dev_info['hardwareVer'] + '_' + dev_info['firmwareVer'],
         }
 
-        msg = self.mqtt_gen_ha_entity(action = 'snapshot', type = 'camera', availability_topic = self.mqtt_gen_topic('state'), device = device, icon = 'mdi:doorbell-video')
+        # Publish trigger topic, this will receive button presses
+        params = {
+            't': 'trigger',
+            'pl': '{{ now().strftime("' + self.date_format + '") }}',
+            'atype': 'trigger',
+            'type': 'button_short_press',
+            'stype': 'button_1'
+        }
+        msg = self.mqtt_gen_ha_entity(action = 'trigger', entity_type = 'device_trigger', availability_topic = self.mqtt_gen_topic('$state'), device = device, params = params)
         msgs.append(msg)
 
+        # Publish raw image data to snapshot topic as camera entity
+        action = 'snapshot'
+        params = {
+            'ic': 'mdi:doorbell-video',
+            't': self.mqtt_gen_topic(action),
+        }
+        msg = self.mqtt_gen_ha_entity(action = action, entity_type = 'camera', availability_topic = self.mqtt_gen_topic('$state'), device = device, params = params)
+        msgs.append(msg)
+
+        # Create sensor to show snapshot age
+        params = { 'ic': 'mdi:clock', 'val_tpl': '{{ strptime(value, "' + self.date_format + '") }}', 'stat_t': self.mqtt_gen_topic('snapshot/datetime') }
+        msg = self.mqtt_gen_ha_entity(name = self.ha_camera_name + ' snapshot date/time', action = 'snapshot_datetime', entity_type = 'sensor', availability_topic = self.mqtt_gen_topic('$state'), device = device, params = params)
+        msgs.append(msg)
+
+        # Create sensor for last action
+        action = 'action'
+        params = { 'ic': 'mdi:bell-alert', 'stat_t': self.mqtt_gen_topic(action) }
+        msg = self.mqtt_gen_ha_entity(action = action, entity_type = 'sensor', availability_topic = self.mqtt_gen_topic('$state'), device = device, params = params)
+        msgs.append(msg)
+
+        # Publish timestamp of last action to its own topic
         for action in self.actions:
-            msg = self.mqtt_gen_ha_entity(action = action, type = 'binary_sensor', availability_topic = self.mqtt_gen_topic('state'), device = device, icon = 'mdi:doorbell-video')
+            params = { 'ic': 'mdi:clock', 'val_tpl': '{{ strptime(value, "' + self.date_format + '") }}', 'stat_t': self.mqtt_gen_topic(action + '_datetime') }
+            msg = self.mqtt_gen_ha_entity(action = action, entity_type = 'sensor', availability_topic = self.mqtt_gen_topic('$state'), device = device, params = params)
             msgs.append(msg)
 
-        mqtt_auth = {'username':self.mqtt_user, 'password': self.mqtt_pass}
+        # Snapshot button
+        action = 'update_snapshot'
+        params = { 'ic': 'mdi:bell-cog', 'payload_press': '{{ now().strftime("' + self.date_format + '") }}' }
+        msg = self.mqtt_gen_ha_entity(action = action, entity_type = 'button', availability_topic = self.mqtt_gen_topic('$state'), device = device, params = params)
+        msgs.append(msg)
+
+        action = 'ring_volume'
+        params = {
+            'ic': 'mdi:bell-ring',
+            'stat_t': self.mqtt_gen_topic(action),
+            'cmd_t':  self.mqtt_gen_topic(action + '/set'),
+            'min': 0,
+            'max': 100,
+            'step': 10,
+            'unit_of_meas': '%',
+        }
+        msg = self.mqtt_gen_ha_entity(name = self.ha_camera_name + ' ringer volume', action = action, entity_type = 'number', availability_topic = self.mqtt_gen_topic('$state'), device = device, params = params)
+        msgs.append(msg)
+
+        # TODO: night mode on/off/auto select, ring/speaker volume numeric
+
+        mqtt_auth = {'username': self.mqtt_user, 'password': self.mqtt_pass}
         mqtt_publish.multiple(msgs, hostname = self.mqtt_host, port = self.mqtt_port, auth = mqtt_auth)
 
     # The callback for when the client receives a CONNACK response from the server.
@@ -313,23 +367,34 @@ class Foscam2MQTT:
         # Do this in on_connect so they will be re-subscribed on a reconnect
         log.info('MQTT Connected')
 
-        client.subscribe(self.mqtt_gen_topic('hooks_update'))
-        client.subscribe(self.mqtt_gen_topic('snapshot_update'))
+        client.subscribe(self.mqtt_gen_topic('volume/set'))
+        client.subscribe(self.mqtt_gen_topic('hooks/update'))
+        client.subscribe(self.mqtt_gen_topic('snapshot/update'))
 
-        log.debug('Publish 1 to topic ' + self.mqtt_gen_topic('state'))
-        self.mqtt_publish('state', 1)
+        log.debug('Publish 1 to topic ' + self.mqtt_gen_topic('$state'))
+        self.mqtt_publish('$state', 1)
+        ring_volume = int(xmlparse(self.invoke_foscam(cmd='getAudioVolume', return_response=True))['CGI_Result']['volume'])
+        self.mqtt_publish('ring_volume', ring_volume)
 
     # The callback for when a PUBLISH message is received from the server.
     def mqtt_on_message(self, client, userdata, msg):
-        log.debug('MQTT message received ' + msg.topic + ' ' + str(msg.payload))
+        log.debug('MQTT message received ' + msg.topic + ' (' + str(len(msg.payload)) + ' bytes')
 
     def mqtt_on_hooks_update(self, client, userdata, msg):
-        log.debug('Topic hooks_update was triggered')
+        log.debug('Topic hooks/update was triggered')
         self.update_hooks()
 
     def mqtt_on_snapshot_update(self, client, userdata, msg):
-        log.debug('Topic snapshot_update was triggered')
-        self.snapshot(publish = True)
+        log.debug('Topic snapshot/update was triggered')
+        self.mqtt_publish('snapshot', self.snapshot())
+        self.mqtt_publish('snapshot/datetime', dt.strftime(dt.now(), self.date_format))
+
+    def mqtt_on_ring_volume_set(self, client, userdata, msg):
+        log.debug('Topic ring_volume/set was triggered')
+        ring_volume = msg.payload
+        foscam_options = { 'volume': str(ring_volume) }
+        self.invoke_foscam(cmd = 'setAudioVolume', options = foscam_options)
+        self.mqtt_publish('ring_volume', ring_volume)
 
 foscam = Foscam2MQTT(listen_url = config.listen_url, obfuscate = config.obfuscate, paranoid = config.paranoid)
 foscam.date_format = config.date_format
@@ -339,19 +404,28 @@ foscam.foscam_user = config.foscam_user
 foscam.foscam_pass = config.foscam_pass
 foscam.update_hooks()
 
-if config.mqtt_user:
-    log.debug('Initialize MQTT with user/pass')
-    foscam.mqtt_init(host = config.mqtt_host, port = config.mqtt_port, client_id = config.mqtt_client_id, topic = config.mqtt_topic, username = config.mqtt_user, password = config.mqtt_pass)
-else:
-    log.debug('Initialize MQTT without user/pass')
-    foscam.mqtt_init(host = config.mqtt_host, port = config.mqtt_port, client_id = config.mqtt_client_id, topic = config.mqtt_topic)
+# Build MQTT config
+mqtt_config = {
+    'host': config.mqtt_host,
+    'port': config.mqtt_port,
+    'client_id': config.mqtt_client_id,
+    'topic': config.mqtt_topic
+}
+
+# Add username/password if they're specified
+if config.mqtt_user: mqtt_config.update({ 'username': config.mqtt_user, 'password': config.mqtt_pass })
+
+# Initialize MQTT client with our config
+log.debug('Initialize MQTT')
+foscam.mqtt_init(**mqtt_config)
 
 if config.ha_discovery:
     foscam.ha_discovery_topic = config.ha_discovery_topic
     foscam.mqtt_publish_ha_entities()
 
 # Create snapshot for starters
-foscam.snapshot(publish = True)
+foscam.mqtt_publish('snapshot', foscam.snapshot())
+foscam.mqtt_publish('snapshot/datetime', dt.strftime(dt.now(), foscam.date_format))
 
 foscam.mqtt_client.loop_start()
 
@@ -388,11 +462,14 @@ def webhook():
     log.info(req.method + ' ' + action + ' - ' + req.remote_addr)
 
     foscam.mqtt_publish('action', action)
-    foscam.snapshot(publish = True)
+    foscam.mqtt_publish(action + '_datetime', dt.strftime(dt.now(), foscam.date_format))
+
+    foscam.mqtt_publish('snapshot', foscam.snapshot())
+    foscam.mqtt_publish('snapshot/datetime', dt.strftime(dt.now(), foscam.date_format))
 
     if foscam.obfuscate and foscam.paranoid:
-        log.info('Paranoid enabled, cycling webhooks')
-        foscam.update_hooks()
+        log.info('Paranoid enabled, cycling webhook')
+        foscam.update_hooks(action = action)
 
     response = date_time + ' OK'
     return res(response = response, status = 200)
