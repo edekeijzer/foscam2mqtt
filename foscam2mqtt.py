@@ -24,27 +24,27 @@ from signal import signal, Signals, SIGTERM, SIGINT
 parser=ap.ArgumentParser()
 parser.add_argument('--listen-address', type=str, default='0.0.0.0', help='Listening address (default: 0.0.0.0)')
 parser.add_argument('--listen-port', type=int, default=5000, help='Listening port (default: 5000)')
-parser.add_argument('--listen-url', type=str, help='URL we should advertise to Foscam device')
-parser.add_argument('--obfuscate', action=ap.BooleanOptionalAction, help='Obfuscate webhook actions')
-parser.add_argument('--paranoid', action=ap.BooleanOptionalAction, help='Cycle obfuscated webhook action after each trigger')
+parser.add_argument('--listen-url', required=True, type=str, help='URL we should advertise to Foscam device')
+parser.add_argument('--obfuscate', action='store_true', help='Obfuscate webhook actions')
+parser.add_argument('--paranoid', action='store_true', help='Cycle obfuscated webhook action after each trigger')
 parser.add_argument('--foscam-host', type=str, help='Foscam VD1 IP/hostname to connect to for auto-configuration of webhooks')
 parser.add_argument('--foscam-port', type=int, default=88, help='Foscam VD1 port to connect to (default: 88)')
-parser.add_argument('--foscam-ssl', action=ap.BooleanOptionalAction, help='Enable SSL encryption on Foscam connection (default: false, use --foscam-port 443 for this)')
+parser.add_argument('--foscam-ssl', action='store_true', help='Enable SSL encryption on Foscam connection (default: false, use --foscam-port 443 for this)')
 parser.add_argument('--foscam-user', type=str, default='admin', help='Username to use for connecting to Foscam device')
-parser.add_argument('--foscam-pass', help='Password to use for connecting')
-parser.add_argument('--mqtt-host', required=True, help='MQTT server to connect to')
+parser.add_argument('--foscam-pass', type=str, help='Password to use for connecting')
+parser.add_argument('--mqtt-host', type=str, default='localhost', help='MQTT server to connect to')
 parser.add_argument('--mqtt-port', type=int, default=1883, help='MQTT TCP port to connect to (default: 1883)')
-parser.add_argument('--mqtt-ssl', action=ap.BooleanOptionalAction, help='Enable SSL encryption on MQTT connection (default: false)')
-parser.add_argument('--mqtt-user', help='Username to use for connecting (default: none)')
-parser.add_argument('--mqtt-pass', help='Password to use for connecting (only used when username is specified)')
-parser.add_argument('--mqtt-topic', default='foscam2mqtt', help='MQTT topic to publish to (default: foscam2mqtt)')
-parser.add_argument('--mqtt-client-id', default='foscam2mqtt', help='MQTT client ID to use for connecting (default: foscam2mqtt)')
-parser.add_argument('--ha-discovery', action=ap.BooleanOptionalAction, help='Enable publishing to Home Assistant discovery topic (default: false)')
-parser.add_argument('--ha-discovery-topic', default='homeassistant', help='MQTT topic to publish HA discovery information to (default: homeassistant)')
-parser.add_argument('--ha-camera-name', default='Foscam VD1', help='Friendly name of the entities to publish in HA (default: Foscam VD1)')
-parser.add_argument('--ha-cleanup', action=ap.BooleanOptionalAction, help='Remove HA sensor config on exit (default: false)')
-parser.add_argument('--quiet', action=ap.BooleanOptionalAction, help='Only show error and critical messages in console (default: false)')
-parser.add_argument('--log-level', choices=['debug','info','warning','error'], default='warning', help='Log level (default: warning)')
+parser.add_argument('--mqtt-ssl', action='store_true', help='Enable SSL encryption on MQTT connection (default: false)')
+parser.add_argument('--mqtt-user', type=str, help='Username to use for connecting (default: none)')
+parser.add_argument('--mqtt-pass', type=str, help='Password to use for connecting (only used when username is specified)')
+parser.add_argument('--mqtt-topic', type=str, default='foscam2mqtt', help='MQTT topic to publish to (default: foscam2mqtt)')
+parser.add_argument('--mqtt-client-id', type=str, default='foscam2mqtt', help='MQTT client ID to use for connecting (default: foscam2mqtt)')
+parser.add_argument('--ha-discovery', action='store_true', help='Enable publishing to Home Assistant discovery topic (default: false)')
+parser.add_argument('--ha-discovery-topic', type=str, default='homeassistant', help='MQTT topic to publish HA discovery information to (default: homeassistant)')
+parser.add_argument('--ha-device-name', type=str, default='Foscam VD1', help='Friendly name of the entities to publish in HA (default: Foscam VD1)')
+parser.add_argument('--ha-cleanup', action='store_true', help='Remove HA sensor config on exit (default: false)')
+parser.add_argument('--quiet', action='store_true', help='Only show error and critical messages in console (default: false)')
+parser.add_argument('--log-level', type=str, default='warning', choices=['debug','info','warning','error'], help='Log level (default: warning)')
 parser.add_argument('--date-format', type=str, default='%Y-%m-%d %H:%M:%S', help='Date/time format for logging (strftime template)')
 config=parser.parse_args()
 
@@ -105,7 +105,7 @@ class Foscam2MQTT:
         self.mqtt_topic = 'foscam2mqtt'
         self.ha_discovery = False
         self.ha_discovery_topic = 'homeassistant'
-        self.ha_camera_name = 'Foscam VD1'
+        self.ha_device_name = 'Foscam VD1'
 
         log.info('Foscam2MQTT initialized')
 
@@ -209,8 +209,8 @@ class Foscam2MQTT:
             self.mqtt_settings['auth'] = {'username': username, 'password': password}
 
         if self.ha_discovery:
-            self.ha_camera_name = camera_name
-            log.info('Camera name is ' + self.ha_camera_name)
+            self.ha_device_name = camera_name
+            log.info('Camera name is ' + self.ha_device_name)
 
         self.mqtt_client.on_connect = self.mqtt_on_connect
         self.mqtt_client.on_message = self.mqtt_on_message
@@ -260,7 +260,7 @@ class Foscam2MQTT:
             availability_topic = self.mqtt_gen_topic('$state')
 
         if not name:
-            name = self.ha_camera_name + ' ' + action
+            name = self.ha_device_name + ' ' + action
 
         config_topic = self.ha_discovery_topic + '/' + entity_type + '/' + unique_id + '/config'
 
@@ -302,7 +302,7 @@ class Foscam2MQTT:
         device = {
             'manufacturer': 'Foscam',
             'model': 'VD1',
-            'name': self.ha_camera_name,
+            'name': self.ha_device_name,
             'identifiers': [self.mqtt_topic],
             'sw_version': dev_info['hardwareVer'] + '_' + dev_info['firmwareVer'],
         }
@@ -318,7 +318,7 @@ class Foscam2MQTT:
 
         # Create sensor to show snapshot age
         params = { 'ic': 'mdi:clock', 'val_tpl': '{{ strptime(value, "' + self.date_format + '") }}', 'stat_t': self.mqtt_gen_topic('snapshot/datetime') }
-        msg = self.mqtt_gen_ha_entity(name = self.ha_camera_name + ' snapshot date/time', action = 'snapshot_datetime', entity_type = 'sensor', device = device, params = params)
+        msg = self.mqtt_gen_ha_entity(name = self.ha_device_name + ' snapshot date/time', action = 'snapshot_datetime', entity_type = 'sensor', device = device, params = params)
         msgs.append(msg)
 
         # Create sensor for last action
@@ -352,7 +352,7 @@ class Foscam2MQTT:
         # Snapshot button
         action = 'update_snapshot'
         params = { 'ic': 'mdi:bell-cog', 'cmd_t': self.mqtt_gen_topic('snapshot/update'), 'cmd_tpl': '{{ now().strftime("' + self.date_format + '") }}' }
-        msg = self.mqtt_gen_ha_entity(name = self.ha_camera_name + ' update snapshot', action = action, entity_type = 'button', device = device, params = params)
+        msg = self.mqtt_gen_ha_entity(name = self.ha_device_name + ' update snapshot', action = action, entity_type = 'button', device = device, params = params)
         msgs.append(msg)
 
         action = 'ring_volume'
@@ -365,7 +365,7 @@ class Foscam2MQTT:
             'step': 10,
             'unit_of_meas': '%',
         }
-        msg = self.mqtt_gen_ha_entity(name = self.ha_camera_name + ' ringer volume', action = action, entity_type = 'number', device = device, params = params)
+        msg = self.mqtt_gen_ha_entity(name = self.ha_device_name + ' ringer volume', action = action, entity_type = 'number', device = device, params = params)
         msgs.append(msg)
 
         # TODO: night mode on/off/auto select, ring/speaker volume numeric
