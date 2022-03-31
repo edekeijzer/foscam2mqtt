@@ -118,10 +118,10 @@ class Foscam2MQTT:
             return False
 
     def invoke_foscam(self, cmd, options = None, return_response = False):
-        foscam_url = 'http://' + self.foscam_host + ':' + str(self.foscam_port) + '/cgi-bin/CGIProxy.fcgi?usr=' + self.foscam_user + '&pwd=' + self.foscam_pass + '&cmd=' + cmd
+        foscam_url = f"http://{self.foscam_host}:{str(self.foscam_port)}/cgi-bin/CGIProxy.fcgi?usr={self.foscam_user}&pwd={self.foscam_pass}&cmd={cmd}"
         if options:
             for key,value in options.items():
-                foscam_url += '&' + key + '=' + value
+                foscam_url += f"&{key}={value}"
         try:
             response = requests.get(foscam_url, timeout = 15, verify = False)
             response.raise_for_status()
@@ -149,7 +149,7 @@ class Foscam2MQTT:
     def update_hooks(self, triggered_action = None):
         if self.listen_url is None:
             self.listen_url = 'http://localhost:5000/'
-            log.debug('Assuming default listen url: ' + self.listen_url)
+            log.debug(f"Assuming default listen url: {self.listen_url}")
         action_aliases = dict({'button':'BKLinkUrl','motion':'MDLinkUrl','sound':'SDLinkUrl','face':'FaceLinkUrl','human':'HumanLinkUrl'}) #,'alarm':'AlarmUrl'})
         # If an action_name was specified, only update that one.
         foscam_options = dict()
@@ -166,26 +166,26 @@ class Foscam2MQTT:
                     alarm_url_enc = unquote(alarm_urls[alias])
                     alarm_url_byte = b64dec(alarm_url_enc)
                     alarm_url = alarm_url_byte.decode('ascii')
-                    log.debug('Retrieved existing URL for action ' + action + ': ' + alarm_url)
+                    log.debug(f"Retrieved existing URL for action {action}: {alarm_url}")
                     if self.listen_url in alarm_url:
-                        action = alarm_url.replace((self.listen_url + '?action='), '')
-                        log.debug('Extracted action: ' + action)
+                        action = alarm_url.replace((f"{self.listen_url}?action="), '')
+                        log.debug(f"Extracted action: {action}")
                     else:
                         action = 'none'
             else:
                 action = action_name
-            action_url = self.listen_url + '?action=' + action
-            log.debug('Generated URL for ' + action_name + ' - ' + action_url)
+            action_url = f"{self.listen_url}?action={action}"
+            log.debug(f"Generated URL for {action_name} - {action_url}")
             encoded_url = b64enc(action_url.encode('ascii'))
             foscam_options[alias] = encoded_url.decode('ascii')
         self.invoke_foscam(cmd = 'setAlarmHttpServer', options = foscam_options, return_response = True)
 
     def mqtt_gen_topic(self, sub_topic, main_topic = None):
         if main_topic is None: main_topic = self.mqtt_topic
-        return main_topic + '/' + sub_topic
+        return f"{main_topic}/{sub_topic}"
 
     def mqtt_init(self, host, port = 1883, ssl = False, username = None, password = None, client_id = 'foscam2mqtt', topic = 'foscam2mqtt'):
-        log.info('Initializing MQTT client with ID ' + client_id)
+        log.info(f"Initializing MQTT client with ID {client_id}")
         self.mqtt_client_id = client_id
         self.mqtt_client = mqtt.Client(protocol=mqtt.MQTTv311, client_id = client_id, clean_session = False)
 
@@ -193,7 +193,7 @@ class Foscam2MQTT:
         self.mqtt_port = port
 
         self.mqtt_topic = topic
-        log.info('MQTT base topic is ' + topic)
+        log.info(f"MQTT base topic is {topic}")
 
         self.mqtt_settings = {
             'protocol':  mqtt.MQTTv311,
@@ -209,22 +209,22 @@ class Foscam2MQTT:
             self.mqtt_settings['auth'] = {'username': username, 'password': password}
 
         if self.ha_discovery:
-            log.info('Camera name is ' + self.ha_device_name)
+            log.info(f"Camera name is {self.ha_device_name}")
 
         self.mqtt_client.on_connect = self.mqtt_on_connect
         self.mqtt_client.on_message = self.mqtt_on_message
 
-        log.info('Connect to MQTT broker ' + self.mqtt_host + ':' + str(self.mqtt_port))
+        log.info(f"Connect to MQTT broker {self.mqtt_host}:{str(self.mqtt_port)}")
         self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
 
-        log.debug('Add callback for topic ' + self.mqtt_gen_topic('snapshot/update'))
+        log.debug(f"Add callback for topic {self.mqtt_gen_topic('snapshot/update')}")
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('snapshot/update'), self.mqtt_on_snapshot_update)
 
-        log.debug('Add callback for topic ' + self.mqtt_gen_topic('ring_volume/set'))
+        log.debug(f"Add callback for topic {self.mqtt_gen_topic('ring_volume/set')}")
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('ring_volume/set'), self.mqtt_on_ring_volume_set)
 
     def mqtt_disconnect(self):
-        log.debug('Publish 0 to topic ' + self.mqtt_gen_topic('$state'))
+        log.debug(f"Publish 0 to topic {self.mqtt_gen_topic('$state')}")
         self.mqtt_publish('$state', 0)
         log.info('Disconnect')
         self.mqtt_client.disconnect()
@@ -242,23 +242,23 @@ class Foscam2MQTT:
             if type(payload) is int:
                 payload = str(payload)
             elif type(payload) is bytes:
-                payload = 'of ' + str(len(payload)) + ' bytes'
+                payload = f"of {str(len(payload))} bytes"
             elif type(payload) is not str:
-                payload = 'of type ' + type(payload).__name__
-            log.debug('Published payload ' + payload + ' to topic ' + topic)
+                payload = f"of type {type(payload).__name__}"
+            log.debug(f"Published payload {payload} to topic {topic}")
 
     def mqtt_gen_ha_entity(self, action, entity_type, availability_topic = None, name = None, params = None, device = None, icon = 'mdi:help-box'):
         unique_id = self.mqtt_topic + '_' + action
-        log.debug('Generated unique_id ' + unique_id)
+        log.debug(f"Generated unique_id {unique_id}")
 
         # Set a sensible default for availability
         if not availability_topic:
             availability_topic = self.mqtt_gen_topic('$state')
 
         if not name:
-            name = self.ha_device_name + ' ' + action
+            name = f"{self.ha_device_name} {action}"
 
-        config_topic = self.ha_discovery_topic + '/' + entity_type + '/' + unique_id + '/config'
+        config_topic = f"{self.ha_discovery_topic}/{entity_type}/{unique_id}/config"
 
         # Create generic base
         entity = {
@@ -278,7 +278,7 @@ class Foscam2MQTT:
 
         if device: entity['dev'] = device
         entity_json = json_dumps(entity)
-        log.debug(action + ' entity_json ' + entity_json)
+        log.debug(f"{action} entity_json {entity_json}")
 
         msg = {
             'topic': config_topic,
@@ -300,7 +300,7 @@ class Foscam2MQTT:
             'model': 'VD1',
             'name': self.ha_device_name,
             'identifiers': [self.mqtt_topic],
-            'sw_version': dev_info['hardwareVer'] + '_' + dev_info['firmwareVer'],
+            'sw_version': f"{dev_info['hardwareVer']}/{dev_info['firmwareVer']}",
         }
 
         # Publish raw image data to snapshot topic as camera entity
@@ -314,7 +314,7 @@ class Foscam2MQTT:
 
         # Create sensor to show snapshot age
         params = { 'ic': 'mdi:clock', 'val_tpl': '{{ strptime(value, "' + self.date_format + '") }}', 'stat_t': self.mqtt_gen_topic('snapshot/datetime') }
-        msg = self.mqtt_gen_ha_entity(name = self.ha_device_name + ' snapshot date/time', action = 'snapshot_datetime', entity_type = 'sensor', device = device, params = params)
+        msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} snapshot date/time", action = 'snapshot_datetime', entity_type = 'sensor', device = device, params = params)
         msgs.append(msg)
 
         # Create sensor for last action
@@ -328,40 +328,39 @@ class Foscam2MQTT:
             params = {
                 'ic': 'mdi:clock',
                 'val_tpl': '{{ strptime(value, "' + self.date_format + '") }}',
-                'stat_t': self.mqtt_gen_topic(action + '_datetime'),
+                'stat_t': self.mqtt_gen_topic(f"{action}_datetime"),
             }
             msg = self.mqtt_gen_ha_entity(action = action, entity_type = 'sensor', device = device, params = params)
             msgs.append(msg)
 
             # Publish trigger topic, this will receive button presses
             params = {
-                't': self.mqtt_gen_topic(action + '/trigger'),
+                't': self.mqtt_gen_topic(f"{action}/trigger"),
                 'pl': self.trigger_payload,
                 'atype': 'trigger',
                 'type': 'trigger',
                 'stype': action,
             }
-            log.debug('HA ' + action + ' trigger entity')
-            msg = self.mqtt_gen_ha_entity(action = 'trigger_' + action, entity_type = 'device_automation', device = device, params = params)
+            msg = self.mqtt_gen_ha_entity(action = f"trigger_{action}", entity_type = 'device_automation', device = device, params = params)
             msgs.append(msg)
 
         # Snapshot button
         action = 'update_snapshot'
         params = { 'ic': 'mdi:bell-cog', 'cmd_t': self.mqtt_gen_topic('snapshot/update'), 'cmd_tpl': '{{ now().strftime("' + self.date_format + '") }}' }
-        msg = self.mqtt_gen_ha_entity(name = self.ha_device_name + ' update snapshot', action = action, entity_type = 'button', device = device, params = params)
+        msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} update snapshot", action = action, entity_type = 'button', device = device, params = params)
         msgs.append(msg)
 
         action = 'ring_volume'
         params = {
             'ic': 'mdi:bell-ring',
             'stat_t': self.mqtt_gen_topic(action),
-            'cmd_t':  self.mqtt_gen_topic(action + '/set'),
+            'cmd_t':  self.mqtt_gen_topic(f"{action}/set"),
             'min': 0,
             'max': 100,
             'step': 10,
             'unit_of_meas': '%',
         }
-        msg = self.mqtt_gen_ha_entity(name = self.ha_device_name + ' ringer volume', action = action, entity_type = 'number', device = device, params = params)
+        msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} ringer volume", action = action, entity_type = 'number', device = device, params = params)
         msgs.append(msg)
 
         # TODO: night mode on/off/auto select, ring/speaker volume numeric
@@ -378,15 +377,15 @@ class Foscam2MQTT:
         client.subscribe(self.mqtt_gen_topic('hooks/update'))
         client.subscribe(self.mqtt_gen_topic('snapshot/update'))
 
-        log.debug('Publish 1 to topic ' + self.mqtt_gen_topic('$state'))
+        log.debug(f"Publish 1 to topic {self.mqtt_gen_topic('$state')}")
         self.mqtt_publish('$state', 1)
         ring_volume = int(xmlparse(self.invoke_foscam(cmd='getAudioVolume', return_response=True))['CGI_Result']['volume'])
-        log.debug('Retrieved volume from device: ' + str(ring_volume))
+        log.debug(f"Retrieved volume from device: {str(ring_volume)}")
         self.mqtt_publish('ring_volume', ring_volume)
 
     # The callback for when a PUBLISH message is received from the server.
     def mqtt_on_message(self, client, userdata, msg):
-        log.debug('MQTT message received ' + msg.topic + ' (' + str(len(msg.payload)) + ' bytes')
+        log.debug(f"MQTT message received {msg.topic} ({str(len(msg.payload))} bytes)")
 
     def mqtt_on_hooks_update(self, client, userdata, msg):
         log.debug('Topic hooks/update was triggered')
@@ -399,7 +398,7 @@ class Foscam2MQTT:
 
     def mqtt_on_ring_volume_set(self, client, userdata, msg):
         ring_volume = int(msg.payload)
-        log.debug('Topic ring_volume/set was triggered, volume: ' + str(ring_volume))
+        log.debug(f"Topic ring_volume/set was triggered, volume: {str(ring_volume)}")
         foscam_options = { 'volume': str(ring_volume) }
         self.invoke_foscam(cmd = 'setAudioVolume', options = foscam_options)
         self.mqtt_publish('ring_volume', ring_volume)
