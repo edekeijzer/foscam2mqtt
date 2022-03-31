@@ -41,7 +41,7 @@ parser.add_argument('--mqtt-topic', default='foscam2mqtt', help='MQTT topic to p
 parser.add_argument('--mqtt-client-id', default='foscam2mqtt', help='MQTT client ID to use for connecting (default: foscam2mqtt)')
 parser.add_argument('--ha-discovery', action=ap.BooleanOptionalAction, help='Enable publishing to Home Assistant discovery topic (default: false)')
 parser.add_argument('--ha-discovery-topic', default='homeassistant', help='MQTT topic to publish HA discovery information to (default: homeassistant)')
-parser.add_argument('--ha-camera-name', default='Foscam VD1', help='Friendly name of the entities to publish in HA (default: Foscam VD1)')
+parser.add_argument('--ha-device-name', default='Foscam VD1', help='Friendly name of the entities to publish in HA (default: Foscam VD1)')
 parser.add_argument('--ha-cleanup', action=ap.BooleanOptionalAction, help='Remove HA sensor config on exit (default: false)')
 parser.add_argument('--quiet', action=ap.BooleanOptionalAction, help='Only show error and critical messages in console (default: false)')
 parser.add_argument('--log-level', choices=['debug','info','warning','error'], default='warning', help='Log level (default: warning)')
@@ -50,7 +50,7 @@ config=parser.parse_args()
 
 ## Enable logging
 log_level = getattr(logging, config.log_level.upper())
-log_file = '/log/foscam2mqtt_' + dt.strftime(dt.now(), '%Y%m%d_%H%M%S') + '.log'
+log_file = f"/log/foscam2mqtt_{dt.strftime(dt.now(), '%Y%m%d_%H%M%S')}.log"
 log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 log_date_format = config.date_format
 logging.basicConfig(filename=log_file, filemode='w', level=log_level, format=log_format, datefmt=log_date_format)
@@ -73,8 +73,8 @@ else:
 # Add ch to logger
 log.addHandler(ch)
 
-log.info('Log level: ' + config.log_level.upper())
-log.info('Listening on ' + config.listen_address + ':' + str(config.listen_port))
+log.info(f"Log level: {config.log_level.upper()}")
+log.info(f"Listening on {config.listen_address}:{str(config.listen_port)}")
 
 class Foscam2MQTT:
     def __init__(self, listen_url = None, obfuscate = False, paranoid = False, quiet = False):
@@ -105,7 +105,7 @@ class Foscam2MQTT:
         self.mqtt_topic = 'foscam2mqtt'
         self.ha_discovery = False
         self.ha_discovery_topic = 'homeassistant'
-        self.ha_camera_name = 'Foscam VD1'
+        self.ha_device_name = 'Foscam VD1'
 
         log.info('Foscam2MQTT initialized')
 
@@ -184,7 +184,7 @@ class Foscam2MQTT:
         if main_topic is None: main_topic = self.mqtt_topic
         return main_topic + '/' + sub_topic
 
-    def mqtt_init(self, host, port = 1883, ssl = False, username = None, password = None, client_id = 'foscam2mqtt', topic = 'foscam2mqtt', camera_name = 'Foscam VD1'):
+    def mqtt_init(self, host, port = 1883, ssl = False, username = None, password = None, client_id = 'foscam2mqtt', topic = 'foscam2mqtt'):
         log.info('Initializing MQTT client with ID ' + client_id)
         self.mqtt_client_id = client_id
         self.mqtt_client = mqtt.Client(protocol=mqtt.MQTTv311, client_id = client_id, clean_session = False)
@@ -209,17 +209,13 @@ class Foscam2MQTT:
             self.mqtt_settings['auth'] = {'username': username, 'password': password}
 
         if self.ha_discovery:
-            self.ha_camera_name = camera_name
-            log.info('Camera name is ' + self.ha_camera_name)
+            log.info('Camera name is ' + self.ha_device_name)
 
         self.mqtt_client.on_connect = self.mqtt_on_connect
         self.mqtt_client.on_message = self.mqtt_on_message
 
         log.info('Connect to MQTT broker ' + self.mqtt_host + ':' + str(self.mqtt_port))
         self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
-
-        log.debug('Add callback for topic ' + self.mqtt_gen_topic('hooks/update'))
-        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('hooks/update'), self.mqtt_on_hooks_update)
 
         log.debug('Add callback for topic ' + self.mqtt_gen_topic('snapshot/update'))
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('snapshot/update'), self.mqtt_on_snapshot_update)
@@ -260,7 +256,7 @@ class Foscam2MQTT:
             availability_topic = self.mqtt_gen_topic('$state')
 
         if not name:
-            name = self.ha_camera_name + ' ' + action
+            name = self.ha_device_name + ' ' + action
 
         config_topic = self.ha_discovery_topic + '/' + entity_type + '/' + unique_id + '/config'
 
@@ -302,7 +298,7 @@ class Foscam2MQTT:
         device = {
             'manufacturer': 'Foscam',
             'model': 'VD1',
-            'name': self.ha_camera_name,
+            'name': self.ha_device_name,
             'identifiers': [self.mqtt_topic],
             'sw_version': dev_info['hardwareVer'] + '_' + dev_info['firmwareVer'],
         }
@@ -318,7 +314,7 @@ class Foscam2MQTT:
 
         # Create sensor to show snapshot age
         params = { 'ic': 'mdi:clock', 'val_tpl': '{{ strptime(value, "' + self.date_format + '") }}', 'stat_t': self.mqtt_gen_topic('snapshot/datetime') }
-        msg = self.mqtt_gen_ha_entity(name = self.ha_camera_name + ' snapshot date/time', action = 'snapshot_datetime', entity_type = 'sensor', device = device, params = params)
+        msg = self.mqtt_gen_ha_entity(name = self.ha_device_name + ' snapshot date/time', action = 'snapshot_datetime', entity_type = 'sensor', device = device, params = params)
         msgs.append(msg)
 
         # Create sensor for last action
@@ -352,7 +348,7 @@ class Foscam2MQTT:
         # Snapshot button
         action = 'update_snapshot'
         params = { 'ic': 'mdi:bell-cog', 'cmd_t': self.mqtt_gen_topic('snapshot/update'), 'cmd_tpl': '{{ now().strftime("' + self.date_format + '") }}' }
-        msg = self.mqtt_gen_ha_entity(name = self.ha_camera_name + ' update snapshot', action = action, entity_type = 'button', device = device, params = params)
+        msg = self.mqtt_gen_ha_entity(name = self.ha_device_name + ' update snapshot', action = action, entity_type = 'button', device = device, params = params)
         msgs.append(msg)
 
         action = 'ring_volume'
@@ -365,7 +361,7 @@ class Foscam2MQTT:
             'step': 10,
             'unit_of_meas': '%',
         }
-        msg = self.mqtt_gen_ha_entity(name = self.ha_camera_name + ' ringer volume', action = action, entity_type = 'number', device = device, params = params)
+        msg = self.mqtt_gen_ha_entity(name = self.ha_device_name + ' ringer volume', action = action, entity_type = 'number', device = device, params = params)
         msgs.append(msg)
 
         # TODO: night mode on/off/auto select, ring/speaker volume numeric
@@ -434,6 +430,7 @@ foscam.mqtt_init(**mqtt_config)
 if config.ha_discovery:
     foscam.ha_discovery = config.ha_discovery
     foscam.ha_discovery_topic = config.ha_discovery_topic
+    foscam.ha_device_name = config.ha_device_name
     foscam.mqtt_publish_ha_entities()
 
 # Create snapshot for starters
@@ -460,14 +457,14 @@ def webhook():
     if 'action' in req_args:
         action = req_args['action']
     else:
-        log.warning('No action specified - ' + req.remote_addr)
-        response = date_time + ' ERROR - no action specified'
+        log.warning(f"No action specified - {req.remote_addr}")
+        response = f"{date_time} ERROR - no action specified"
         return res(response=response, status=400)
 
     verified_action = foscam.verify_action(action)
     if not verified_action:
-        log.warning('Unknown action ' + action + ' - ' + req.remote_addr)
-        response = date_time + ' ERROR - unknown action'
+        log.warning(f"Unknown action {action} - {req.remote_addr}")
+        response = f"{date_time} ERROR - unknown action"
         return res(response = response, status = 400)
     else:
         action = verified_action
@@ -475,23 +472,23 @@ def webhook():
     log.info(req.method + ' ' + action + ' - ' + req.remote_addr)
 
     foscam.mqtt_publish('action', action)
-    foscam.mqtt_publish(action + '_datetime', dt.strftime(dt.now(), foscam.date_format))
+    foscam.mqtt_publish(f"{action}_datetime", dt.strftime(dt.now(), foscam.date_format))
 
     foscam.mqtt_publish('snapshot', foscam.snapshot())
     foscam.mqtt_publish('snapshot/datetime', dt.strftime(dt.now(), foscam.date_format))
 
     if foscam.ha_discovery:
-        foscam.mqtt_publish(action + '/trigger', foscam.trigger_payload)
+        foscam.mqtt_publish(f"{action}/trigger", foscam.trigger_payload)
 
     if foscam.obfuscate and foscam.paranoid:
         log.info('Paranoid enabled, cycling webhook')
         foscam.update_hooks(action = action)
 
-    response = date_time + ' OK'
+    response = f"{date_time} OK"
     return res(response = response, status = 200)
 
 def on_signal(x, y):
-    log.debug(Signals(x).name + ' received')
+    log.debug(f"{Signals(x).name} received")
     app_server.close()
 
 signal(SIGTERM, on_signal)
