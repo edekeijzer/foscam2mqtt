@@ -223,6 +223,9 @@ class Foscam2MQTT:
         log.debug(f"Add callback for topic {self.mqtt_gen_topic('ring_volume/set')}")
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('ring_volume/set'), self.mqtt_on_ring_volume_set)
 
+        log.debug(f"Add callback for topic {self.mqtt_gen_topic('reboot')}")
+        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('reboot'), self.mqtt_on_reboot)
+
     def mqtt_disconnect(self):
         log.debug(f"Publish 0 to topic {self.mqtt_gen_topic('$state')}")
         self.mqtt_publish('$state', 0)
@@ -346,8 +349,13 @@ class Foscam2MQTT:
 
         # Snapshot button
         action = 'update_snapshot'
-        params = { 'ic': 'mdi:bell-cog', 'cmd_t': self.mqtt_gen_topic('snapshot/update'), 'cmd_tpl': f"{{{{ now().strftime('{self.date_format}') }}}}" }
+        params = { 'ic': 'mdi:camera', 'cmd_t': self.mqtt_gen_topic('snapshot/update'), 'cmd_tpl': f"{{{{ now().strftime('{self.date_format}') }}}}" }
         msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} update snapshot", action = action, entity_type = 'button', device = device, params = params)
+        msgs.append(msg)
+
+        action = 'reboot'
+        params = { 'ic': 'mdi:restart-alert', 'cmd_t': self.mqtt_gen_topic(action), 'cmd_tpl': f"{{{{ now().strftime('{self.date_format}') }}}}" }
+        msg = self.mqtt_gen_ha_entity(action = action, entity_type = 'button', device = device, params = params)
         msgs.append(msg)
 
         action = 'ring_volume'
@@ -398,6 +406,10 @@ class Foscam2MQTT:
         foscam_options = { 'volume': str(ring_volume) }
         self.invoke_foscam(cmd = 'setAudioVolume', options = foscam_options)
         self.mqtt_publish('ring_volume', ring_volume)
+
+    def mqtt_on_reboot(self, client, userdata, msg):
+        log.debug(f"Topic reboot was triggered")
+        self.invoke_foscam(cmd = 'rebootSystem')
 
 foscam = Foscam2MQTT(listen_url = config.listen_url, obfuscate = config.obfuscate, paranoid = config.paranoid)
 foscam.date_format = config.date_format
