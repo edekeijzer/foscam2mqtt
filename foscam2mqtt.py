@@ -248,7 +248,7 @@ class Foscam2MQTT:
             log.debug(f"Published payload {payload} to topic {topic}")
 
     def mqtt_gen_ha_entity(self, action, entity_type, availability_topic = None, name = None, params = None, device = None, icon = 'mdi:help-box'):
-        unique_id = self.mqtt_topic + '_' + action
+        unique_id = f"{self.mqtt_topic}_{action}"
         log.debug(f"Generated unique_id {unique_id}")
 
         # Set a sensible default for availability
@@ -313,7 +313,7 @@ class Foscam2MQTT:
         msgs.append(msg)
 
         # Create sensor to show snapshot age
-        params = { 'ic': 'mdi:clock', 'val_tpl': '{{ strptime(value, "' + self.date_format + '") }}', 'stat_t': self.mqtt_gen_topic('snapshot/datetime') }
+        params = { 'ic': 'mdi:clock', 'val_tpl': f"{{{{ strptime(value, '{self.date_format}') }}}}", 'stat_t': self.mqtt_gen_topic('snapshot/datetime') }
         msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} snapshot date/time", action = 'snapshot_datetime', entity_type = 'sensor', device = device, params = params)
         msgs.append(msg)
 
@@ -327,7 +327,7 @@ class Foscam2MQTT:
         for action in self.actions:
             params = {
                 'ic': 'mdi:clock',
-                'val_tpl': '{{ strptime(value, "' + self.date_format + '") }}',
+                'val_tpl': f"{{{{ strptime(value, '{self.date_format}') }}}}",
                 'stat_t': self.mqtt_gen_topic(f"{action}_datetime"),
             }
             msg = self.mqtt_gen_ha_entity(action = action, entity_type = 'sensor', device = device, params = params)
@@ -346,7 +346,7 @@ class Foscam2MQTT:
 
         # Snapshot button
         action = 'update_snapshot'
-        params = { 'ic': 'mdi:bell-cog', 'cmd_t': self.mqtt_gen_topic('snapshot/update'), 'cmd_tpl': '{{ now().strftime("' + self.date_format + '") }}' }
+        params = { 'ic': 'mdi:bell-cog', 'cmd_t': self.mqtt_gen_topic('snapshot/update'), 'cmd_tpl': f"{{{{ now().strftime('{self.date_format}') }}}}" }
         msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} update snapshot", action = action, entity_type = 'button', device = device, params = params)
         msgs.append(msg)
 
@@ -386,10 +386,6 @@ class Foscam2MQTT:
     # The callback for when a PUBLISH message is received from the server.
     def mqtt_on_message(self, client, userdata, msg):
         log.debug(f"MQTT message received {msg.topic} ({str(len(msg.payload))} bytes)")
-
-    def mqtt_on_hooks_update(self, client, userdata, msg):
-        log.debug('Topic hooks/update was triggered')
-        self.update_hooks()
 
     def mqtt_on_snapshot_update(self, client, userdata, msg):
         log.debug('Topic snapshot/update was triggered')
@@ -468,7 +464,7 @@ def webhook():
     else:
         action = verified_action
 
-    log.info(req.method + ' ' + action + ' - ' + req.remote_addr)
+    log.info(f"{req.method} {action} - {req.remote_addr}")
 
     foscam.mqtt_publish('action', action)
     foscam.mqtt_publish(f"{action}_datetime", dt.strftime(dt.now(), foscam.date_format))
