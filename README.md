@@ -11,6 +11,10 @@ It's pretty much one single script that will start an API listener with one webh
 * Clone repository
 * Build Docker image
 
+**OR**
+
+* ```docker pull edekeijzer/foscam2mqtt:dev```
+
 ## Usage
 
 Run the Docker container and make sure you either forward TCP port 5000 or run host networking.
@@ -43,15 +47,20 @@ Most of the options have a default value, but it's unlikely to work with all set
 
 If you want the server to auto-configure your Foscam device, please make sure you can reach the device: ```http://10.0.0.2:88/cgi-bin/CGIProxy.fcgi?usr=mqtt&pwd=supersecret&cmd=getDevInfo``` Also make sure you can reach the webhook: ```http://10.10.0.1:5000/``` should show something like: *1970-01-01T13:37:59Z ERROR - no action specified*
 
+## Known issues
+- Alerting to URLs should already be enabled for this to work. Automating this is on the to do list below.
+- Switch states are only retrieved at startup. If you change image settings or volume through the app, this will not be reflected in MQTT/HA.
+
 ## To do
 
-- [ ] Build and publish to a Docker repository
+- [x] Build and publish to a Docker repository
+- [ ] Check/adjust if alerting to URL is enabled in Foscam device
+- [ ] Poll for device settings periodically
 - [ ] Add more settings (in order of appearance)
-  - [ ] Reboot button
+  - [x] Reboot button
+  - [x] Mirror/flip screen
+  - [x] Status LED
   - [ ] Night mode (on/off/auto)
   - [ ] Speaker volume (if anybody has a clue about the CGI cmd, please let me know!)
   - [ ] Sensitivity for detection options
-  - [ ] Status LED
-  - [ ] Mirror screen
-  - [ ] Check/adjust if alerting to URL is enabled in Foscam device
 - [ ] Send detected faces to Deepstack
