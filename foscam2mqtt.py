@@ -223,12 +223,24 @@ class Foscam2MQTT:
         log.debug(f"Add callback for topic {self.mqtt_gen_topic('ring_volume/set')}")
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('ring_volume/set'), self.mqtt_on_ring_volume_set)
 
+        log.debug(f"Add callback for topic {self.mqtt_gen_topic('status_led/set')}")
+        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('status_led/set'), self.mqtt_on_status_led_set)
+
+        log.debug(f"Add callback for topic {self.mqtt_gen_topic('image/hdr/set')}")
+        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('image/hdr/set'), self.mqtt_on_image_hdr_set)
+
+        log.debug(f"Add callback for topic {self.mqtt_gen_topic('image/mirror/set')}")
+        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('image/mirror/set'), self.mqtt_on_image_mirror_set)
+
+        log.debug(f"Add callback for topic {self.mqtt_gen_topic('image/flip/set')}")
+        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('image/flip/set'), self.mqtt_on_image_flip_set)
+
         log.debug(f"Add callback for topic {self.mqtt_gen_topic('reboot')}")
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('reboot'), self.mqtt_on_reboot)
 
     def mqtt_disconnect(self):
         log.debug(f"Publish 0 to topic {self.mqtt_gen_topic('$state')}")
-        self.mqtt_publish('$state', 0)
+        self.mqtt_publish('$state', 0, qos = 2)
         log.info('Disconnect')
         self.mqtt_client.disconnect()
 
@@ -347,6 +359,54 @@ class Foscam2MQTT:
             msg = self.mqtt_gen_ha_entity(action = f"trigger_{action}", entity_type = 'device_automation', device = device, params = params)
             msgs.append(msg)
 
+        # Status LED switch
+        action = 'status_led'
+        params = {
+            'ic': 'mdi:led-on',
+            'stat_t': self.mqtt_gen_topic(action),
+            'cmd_t': self.mqtt_gen_topic(f"{action}/set"),
+            'pl_on': 1,
+            'pl_off': 0,
+        }
+        msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} status LED", action = action, entity_type = 'switch', device = device, params = params)
+        msgs.append(msg)
+
+        # HDR switch
+        action = 'image_hdr'
+        params = {
+            'ic': 'mdi:camera-enhance',
+            'stat_t': self.mqtt_gen_topic('image/hdr'),
+            'cmd_t': self.mqtt_gen_topic('image/hdr/set'),
+            'pl_on': 1,
+            'pl_off': 0,
+        }
+        msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} HDR", action = action, entity_type = 'switch', device = device, params = params)
+        msgs.append(msg)
+
+        # Mirror image switch
+        action = 'image_mirror'
+        params = {
+            'ic': 'mdi:flip-horizontal',
+            'stat_t': self.mqtt_gen_topic('image/mirror'),
+            'cmd_t': self.mqtt_gen_topic('image/mirror/set'),
+            'pl_on': 1,
+            'pl_off': 0,
+        }
+        msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} image mirror", action = action, entity_type = 'switch', device = device, params = params)
+        msgs.append(msg)
+
+        # Vertical image flip switch
+        action = 'image_flip'
+        params = {
+            'ic': 'mdi:flip-vertical',
+            'stat_t': self.mqtt_gen_topic('image/flip'),
+            'cmd_t': self.mqtt_gen_topic('image/flip/set'),
+            'pl_on': 1,
+            'pl_off': 0,
+        }
+        msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} image flip", action = action, entity_type = 'switch', device = device, params = params)
+        msgs.append(msg)
+
         # Snapshot button
         action = 'update_snapshot'
         params = { 'ic': 'mdi:camera', 'cmd_t': self.mqtt_gen_topic('snapshot/update'), 'cmd_tpl': f"{{{{ now().strftime('{self.date_format}') }}}}" }
@@ -381,15 +441,35 @@ class Foscam2MQTT:
         # Do this in on_connect so they will be re-subscribed on a reconnect
         log.info('MQTT Connected')
 
-        client.subscribe(self.mqtt_gen_topic('volume/set'))
+        client.subscribe(self.mqtt_gen_topic('ring_volume/set'))
+        client.subscribe(self.mqtt_gen_topic('status_led/set'))
+        client.subscribe(self.mqtt_gen_topic('image/hdr/set'))
+        client.subscribe(self.mqtt_gen_topic('image/mirror/set'))
+        client.subscribe(self.mqtt_gen_topic('image/flip/set'))
         client.subscribe(self.mqtt_gen_topic('hooks/update'))
         client.subscribe(self.mqtt_gen_topic('snapshot/update'))
 
         log.debug(f"Publish 1 to topic {self.mqtt_gen_topic('$state')}")
-        self.mqtt_publish('$state', 1)
+        self.mqtt_publish('$state', 1, qos = 2)
+
+        status_led = int(xmlparse(self.invoke_foscam(cmd='getLedEnableState', return_response=True))['CGI_Result']['isEnable'])
+        log.debug(f"Retrieved status LED setting from device: {str(status_led)}")
+        self.mqtt_publish('status_led', status_led)
+
         ring_volume = int(xmlparse(self.invoke_foscam(cmd='getAudioVolume', return_response=True))['CGI_Result']['volume'])
-        log.debug(f"Retrieved volume from device: {str(ring_volume)}")
+        log.debug(f"Retrieved volume setting from device: {str(ring_volume)}")
         self.mqtt_publish('ring_volume', ring_volume)
+
+        image_hdr = int(xmlparse(self.invoke_foscam(cmd='getHdrMode', return_response=True))['CGI_Result']['mode'])
+        log.debug(f"Retrieved image HDR setting from device: {str(image_hdr)}")
+        self.mqtt_publish('image/hdr', image_hdr)
+
+        _image_mirror_flip = xmlparse(self.invoke_foscam(cmd='getMirrorAndFlipSetting', return_response=True))['CGI_Result']
+        image_mirror = _image_mirror_flip['isMirror']
+        image_flip = _image_mirror_flip['isFlip']
+        log.debug(f"Retrieved image mirror/flip settings from device, mirror: {str(image_mirror)}, flip: {str(image_flip)}")
+        self.mqtt_publish('image/mirror', image_mirror)
+        self.mqtt_publish('image/flip', image_flip)
 
     # The callback for when a PUBLISH message is received from the server.
     def mqtt_on_message(self, client, userdata, msg):
@@ -406,6 +486,34 @@ class Foscam2MQTT:
         foscam_options = { 'volume': str(ring_volume) }
         self.invoke_foscam(cmd = 'setAudioVolume', options = foscam_options)
         self.mqtt_publish('ring_volume', ring_volume)
+
+    def mqtt_on_status_led_set(self, client, userdata, msg):
+        status_led = int(msg.payload)
+        log.debug(f"Topic status_led/set was triggered, state: {str(status_led)}")
+        foscam_options = { 'isEnable': str(status_led) }
+        self.invoke_foscam(cmd = 'setLedEnableState', options = foscam_options)
+        self.mqtt_publish('status_led', status_led)
+
+    def mqtt_on_image_hdr_set(self, client, userdata, msg):
+        image_hdr = int(msg.payload)
+        log.debug(f"Topic image/hdr/set was triggered, state: {str(image_hdr)}")
+        foscam_options = { 'mode': str(image_hdr) }
+        self.invoke_foscam(cmd = 'setHdrMode', options = foscam_options)
+        self.mqtt_publish('image/hdr', image_hdr)
+
+    def mqtt_on_image_mirror_set(self, client, userdata, msg):
+        image_mirror = int(msg.payload)
+        log.debug(f"Topic image/mirror/set was triggered, state: {str(image_mirror)}")
+        foscam_options = { 'isMirror': str(image_mirror) }
+        self.invoke_foscam(cmd = 'mirrorVideo', options = foscam_options)
+        self.mqtt_publish('image/mirror', image_mirror)
+
+    def mqtt_on_image_flip_set(self, client, userdata, msg):
+        image_flip = int(msg.payload)
+        log.debug(f"Topic image/flip/set was triggered, state: {str(image_flip)}")
+        foscam_options = { 'isFlip': str(image_flip) }
+        self.invoke_foscam(cmd = 'flipVideo', options = foscam_options)
+        self.mqtt_publish('image/flip', image_flip)
 
     def mqtt_on_reboot(self, client, userdata, msg):
         log.debug(f"Topic reboot was triggered")
@@ -478,14 +586,14 @@ def webhook():
 
     log.info(f"{req.method} {action} - {req.remote_addr}")
 
-    foscam.mqtt_publish('action', action)
+    foscam.mqtt_publish('action', action, retain=False)
     foscam.mqtt_publish(f"{action}_datetime", dt.strftime(dt.now(), foscam.date_format))
 
     foscam.mqtt_publish('snapshot', foscam.snapshot())
     foscam.mqtt_publish('snapshot/datetime', dt.strftime(dt.now(), foscam.date_format))
 
     if foscam.ha_discovery:
-        foscam.mqtt_publish(f"{action}/trigger", foscam.trigger_payload)
+        foscam.mqtt_publish(f"{action}/trigger", foscam.trigger_payload, retain = False)
 
     if foscam.obfuscate and foscam.paranoid:
         log.info('Paranoid enabled, cycling webhook')
