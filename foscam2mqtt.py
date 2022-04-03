@@ -23,7 +23,7 @@ from signal import signal, Signals, SIGTERM, SIGINT
 
 parser=ap.ArgumentParser()
 parser.add_argument('--listen-address', type=str, default='0.0.0.0', help='Listening address (default: 0.0.0.0)')
-parser.add_argument('--listen-port', type=int, default=5000, help='Listening port (default: 5000)')
+parser.add_argument('--listen-port', type=int, default=5555, help='Listening port (default: 5555)')
 parser.add_argument('--listen-url', required=True, type=str, help='URL we should advertise to Foscam device')
 parser.add_argument('--obfuscate', action='store_true', help='Obfuscate webhook actions')
 parser.add_argument('--paranoid', action='store_true', help='Cycle obfuscated webhook action after each trigger')
@@ -43,6 +43,9 @@ parser.add_argument('--ha-discovery', action='store_true', help='Enable publishi
 parser.add_argument('--ha-discovery-topic', type=str, default='homeassistant', help='MQTT topic to publish HA discovery information to (default: homeassistant)')
 parser.add_argument('--ha-device-name', type=str, default='Foscam VD1', help='Friendly name of the entities to publish in HA (default: Foscam VD1)')
 parser.add_argument('--ha-cleanup', action='store_true', help='Remove HA sensor config on exit (default: false)')
+parser.add_argument('--deepstack-enable', action='store_true', help='Send detected faces to Deepstack for recognition (default: false)')
+parser.add_argument('--deepstack-url', type=str, default='http://localhost:5000', help='The URL where Deepstack can be found')
+parser.add_argument('--deepstack-api-key', type=str, help='API key to authenticate against Deepstack (default: none)')
 parser.add_argument('--quiet', action='store_true', help='Only show error and critical messages in console (default: false)')
 parser.add_argument('--log-level', type=str, default='warning', choices=['debug','info','warning','error'], help='Log level (default: warning)')
 parser.add_argument('--date-format', type=str, default='%Y-%m-%d %H:%M:%S', help='Date/time format for logging (strftime template)')
@@ -77,7 +80,7 @@ log.info(f"Log level: {config.log_level.upper()}")
 log.info(f"Listening on {config.listen_address}:{str(config.listen_port)}")
 
 class Foscam2MQTT:
-    def __init__(self, listen_url = None, obfuscate = False, paranoid = False, quiet = False):
+    def __init__(self, listen_url, obfuscate = False, paranoid = False, quiet = False):
         # Own settings
         self.actions = 'button','motion','sound','face','human' #,'alarm'
         self.listen_url = listen_url
@@ -147,9 +150,6 @@ class Foscam2MQTT:
         return snapshot
 
     def update_hooks(self, triggered_action = None):
-        if self.listen_url is None:
-            self.listen_url = 'http://localhost:5000/'
-            log.debug(f"Assuming default listen url: {self.listen_url}")
         action_aliases = dict({'button':'BKLinkUrl','motion':'MDLinkUrl','sound':'SDLinkUrl','face':'FaceLinkUrl','human':'HumanLinkUrl'}) #,'alarm':'AlarmUrl'})
         # If an action_name was specified, only update that one.
         foscam_options = dict()
@@ -586,14 +586,54 @@ def webhook():
 
     log.info(f"{req.method} {action} - {req.remote_addr}")
 
+    image_data = foscam.snapshot()
+
     foscam.mqtt_publish('action', action, retain=False)
     foscam.mqtt_publish(f"{action}_datetime", dt.strftime(dt.now(), foscam.date_format))
 
-    foscam.mqtt_publish('snapshot', foscam.snapshot())
+    foscam.mqtt_publish('snapshot', image_data)
     foscam.mqtt_publish('snapshot/datetime', dt.strftime(dt.now(), foscam.date_format))
 
     if foscam.ha_discovery:
         foscam.mqtt_publish(f"{action}/trigger", foscam.trigger_payload, retain = False)
+
+    if config.deepstack_enable and verified_action == 'face':
+        deepstack_url = f"{config.deepstack_url}/v1/vision/face/recognize"
+        log.debug(f"Deepstack API endpoint: {deepstack_url}")
+        try:
+            request_args = {
+                'timeout': 5,
+                'files': {'image': image_data}
+            }
+            if config.deepstack_api_key:
+                request_args['data'] = {'api_key': config.deepstack_api_key}
+            response = requests.post(deepstack_url, **request_args)
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as errh:
+            if response.status_code == 404:
+                log.warning('Remote server returned HTTP error code 404')
+            else:
+                log.warning(errh)
+            return False
+        except req.exceptions.ConnectionError as errc:
+            log.warning(errc)
+            return False
+        except req.exceptions.Timeout as errt:
+            log.warning(errt)
+            return False
+        except req.exceptions.RequestException as err:
+            log.warning(err)
+            return False
+
+        response = response.json()
+        if len(response['predictions']) > 0:
+            for person in response['predictions']:
+                log.info(f"Deepstack recognized {person['userid']} with confidence {str(round(person['confidence'], 2))}")
+                foscam.mqtt_publish(f"{action}/{person['userid']}/snapshot", image_data)
+                foscam.mqtt_publish(f"{action}/{person['userid']}/confidence", person['confidence'])
+                foscam.mqtt_publish(f"{action}/{person['userid']}/date_time", date_time)
+        else:
+            log.info('A face was detected by Foscam, but Deepstack did not recognize anyone.')
 
     if foscam.obfuscate and foscam.paranoid:
         log.info('Paranoid enabled, cycling webhook')
