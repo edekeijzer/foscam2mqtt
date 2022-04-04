@@ -82,11 +82,15 @@ class Foscam2MQTT:
         self.actions = 'button','motion','sound','face','human' #,'alarm'
         self.listen_url = listen_url
         self.paranoid = False
+        self.date_format = '%Y-%m-%dT%H:%M:%SZ'
         self.obfuscate = obfuscate
+
         if self.obfuscate:
             self.action_keys = dict()
             self.paranoid = paranoid
-        self.date_format = '%Y-%m-%dT%H:%M:%SZ'
+            self.trigger_payload = ''.join(rnd.choices(string.ascii_uppercase + string.ascii_lowercase + string.digits, k=8))
+        else:
+            self.trigger_payload = 1
 
         # Foscam settings
         self.foscam_host = None
@@ -307,8 +311,6 @@ class Foscam2MQTT:
         msgs = []
 
         dev_info = xmlparse(self.invoke_foscam(cmd='getDevInfo', return_response=True))['CGI_Result']
-        # Generate a random payload for device trigger
-        self.trigger_payload = ''.join(rnd.choices(string.ascii_uppercase + string.ascii_lowercase + string.digits, k=8))
 
         device = {
             'manufacturer': 'Foscam',
