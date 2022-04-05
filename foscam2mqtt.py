@@ -569,6 +569,7 @@ class Foscam2MQTT:
         if predictions:
             date_time = dt.strftime(dt.now(), self.date_format)
             image = Image.open(BytesIO(image_data))
+            image_payload = BytesIO()
             images = {}
             font = ImageFont.truetype(font='/fonts/noto.ttf', size=24)
             color = (255, 255, 255, 128)
@@ -586,8 +587,9 @@ class Foscam2MQTT:
                 draw.rectangle((x_min, y_min, x_max, y_max), outline=color)
                 draw.text((x_min + 10, y_min + 10), text=f"{label} ({str(round(confidence, 2))})", font=font, fill=color)
             draw.text((8, 8), text=date_time, font=font, fill=color)
-            for label in image.keys():
-                self.mqtt_publish(f"{action}/{label}/snapshot", images[label])
+            for label in images.keys():
+                images[label].save(image_payload, 'JPEG')
+                self.mqtt_publish(f"{action}/{label}/snapshot", image_payload.read())
                 self.mqtt_publish(f"{action}/{label}/datetime", date_time)
 
     def deepstack_face(self, image_data, action = None):
@@ -595,6 +597,7 @@ class Foscam2MQTT:
         if predictions:
             date_time = dt.strftime(dt.now(), self.date_format)
             image = Image.open(BytesIO(image_data))
+            image_payload = BytesIO()
             font = ImageFont.truetype(font='/fonts/noto.ttf', size=24)
             for entity in predictions:
                 user_id = entity['userid']
@@ -605,7 +608,8 @@ class Foscam2MQTT:
                 x_max = min(int(entity["x_max"]) + 10, image.width)
                 y_max = min(int(entity["y_max"]) + 10, image.height)
                 image_crop = image.crop((x_min, y_min, x_max, y_max))
-                self.mqtt_publish(f"{action}/{user_id}/snapshot", image_crop)
+                image_crop.save(image_payload, 'JPEG')
+                self.mqtt_publish(f"{action}/{user_id}/snapshot", image_payload.read())
                 self.mqtt_publish(f"{action}/{user_id}/confidence", confidence)
                 self.mqtt_publish(f"{action}/{user_id}/datetime", date_time)
 
@@ -692,10 +696,10 @@ def webhook():
         foscam.mqtt_publish(f"{action}/trigger", foscam.trigger_payload, retain = False)
 
     if config.deepstack_face and verified_action in ['face', 'button']:
-        foscam.deepstack_face(image_data)
+        foscam.deepstack_face(image_data, verified_action)
 
     elif config.deepstack_object and verified_action in ['motion', 'sound']:
-        foscam.deepstack_object(image_data)
+        foscam.deepstack_object(image_data, verified_action)
 
     if foscam.obfuscate and foscam.paranoid:
         log.info('Paranoid enabled, cycling webhook')
