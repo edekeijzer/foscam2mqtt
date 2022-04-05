@@ -7,6 +7,8 @@ import paho.mqtt.publish as mqtt_publish
 
 import logging
 
+from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
 from base64 import b64encode as b64enc, b64decode as b64dec
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -23,7 +25,7 @@ from signal import signal, Signals, SIGTERM, SIGINT
 
 parser=ap.ArgumentParser()
 parser.add_argument('--listen-address', type=str, default='0.0.0.0', help='Listening address (default: 0.0.0.0)')
-parser.add_argument('--listen-port', type=int, default=5000, help='Listening port (default: 5000)')
+parser.add_argument('--listen-port', type=int, default=5555, help='Listening port (default: 5555)')
 parser.add_argument('--listen-url', required=True, type=str, help='URL we should advertise to Foscam device')
 parser.add_argument('--obfuscate', action='store_true', help='Obfuscate webhook actions')
 parser.add_argument('--paranoid', action='store_true', help='Cycle obfuscated webhook action after each trigger')
@@ -43,6 +45,10 @@ parser.add_argument('--ha-discovery', action='store_true', help='Enable publishi
 parser.add_argument('--ha-discovery-topic', type=str, default='homeassistant', help='MQTT topic to publish HA discovery information to (default: homeassistant)')
 parser.add_argument('--ha-device-name', type=str, default='Foscam VD1', help='Friendly name of the entities to publish in HA (default: Foscam VD1)')
 parser.add_argument('--ha-cleanup', action='store_true', help='Remove HA sensor config on exit (default: false)')
+parser.add_argument('--deepstack-face', action='store_true', help='Send image to Deepstack on face detection for face recognition (default: false)')
+parser.add_argument('--deepstack-object', action='store_true', help='Send image to Deepstack on motion detection for object detection (default: false)')
+parser.add_argument('--deepstack-url', type=str, default='http://localhost:5000', help='The URL where Deepstack can be found')
+parser.add_argument('--deepstack-api-key', type=str, help='API key to authenticate against Deepstack (default: none)')
 parser.add_argument('--quiet', action='store_true', help='Only show error and critical messages in console (default: false)')
 parser.add_argument('--log-level', type=str, default='warning', choices=['debug','info','warning','error'], help='Log level (default: warning)')
 parser.add_argument('--date-format', type=str, default='%Y-%m-%d %H:%M:%S', help='Date/time format for logging (strftime template)')
@@ -77,7 +83,7 @@ log.info(f"Log level: {config.log_level.upper()}")
 log.info(f"Listening on {config.listen_address}:{str(config.listen_port)}")
 
 class Foscam2MQTT:
-    def __init__(self, listen_url = None, obfuscate = False, paranoid = False, quiet = False):
+    def __init__(self, listen_url, obfuscate = False, paranoid = False, quiet = False):
         # Own settings
         self.actions = 'button','motion','sound','face','human' #,'alarm'
         self.listen_url = listen_url
@@ -110,6 +116,11 @@ class Foscam2MQTT:
         self.ha_discovery = False
         self.ha_discovery_topic = 'homeassistant'
         self.ha_device_name = 'Foscam VD1'
+
+
+        # Deepstack settings
+        self.deepstack_url = None
+        self.deepstack_api_key = None
 
         log.info('Foscam2MQTT initialized')
 
@@ -156,9 +167,6 @@ class Foscam2MQTT:
         return snapshot
 
     def update_hooks(self, triggered_action = None):
-        if self.listen_url is None:
-            self.listen_url = 'http://localhost:5000/'
-            log.debug(f"Assuming default listen url: {self.listen_url}")
         action_aliases = dict({'button':'BKLinkUrl','motion':'MDLinkUrl','sound':'SDLinkUrl','face':'FaceLinkUrl','human':'HumanLinkUrl'}) #,'alarm':'AlarmUrl'})
         # If an action_name was specified, only update that one.
         foscam_options = dict()
@@ -526,12 +534,102 @@ class Foscam2MQTT:
         log.debug(f"Topic reboot was triggered")
         self.invoke_foscam(cmd = 'rebootSystem')
 
+    def _invoke_deepstack(self, endpoint, image_data):
+        deepstack_url = f"{self.deepstack_url}/v1/vision/{endpoint}"
+        log.debug(f"Deepstack API endpoint: {deepstack_url}")
+        try:
+            request_args = {
+                'timeout': 5,
+                'files': {'image': image_data}
+            }
+            if self.deepstack_api_key:
+                request_args['data'] = {'api_key': self.deepstack_api_key}
+            response = requests.post(deepstack_url, **request_args)
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as errh:
+            if response.status_code == 404:
+                log.warning('Remote server returned HTTP error code 404')
+            else:
+                log.warning(errh)
+            return False
+        except req.exceptions.ConnectionError as errc:
+            log.warning(errc)
+            return False
+        except req.exceptions.Timeout as errt:
+            log.warning(errt)
+            return False
+        except req.exceptions.RequestException as err:
+            log.warning(err)
+            return False
+
+        response = response.json()
+
+        if len(response['predictions']) > 0:
+            log.debug(f"Deepstack returned {str(response['predictions'])} predictions for {endpoint}.")
+            return response['predictions']
+        else:
+            log.warning(f"No predictions returned for {endpoint}.")
+            return False
+
+    def deepstack_object(self, image_data, action = None):
+        predictions = self._invoke_deepstack('detection', image_data)
+        if predictions:
+            date_time = dt.strftime(dt.now(), self.date_format)
+            image = Image.open(BytesIO(image_data))
+            image_payload = BytesIO()
+            images = {}
+            font = ImageFont.truetype(font='/fonts/noto.ttf', size=24)
+            color = (255, 255, 255, 128)
+            for entity in predictions:
+                label = entity['label']
+                if not label in images.keys():
+                    images[label] = image
+                draw = ImageDraw.Draw(images[label])
+                confidence = entity['confidence']
+                log.info(f"A {label} was detected by Deepstack with {str(round(confidence, 2))} confidence.")
+                x_min = max(int(entity["x_min"]) - 10, 0)
+                y_min = max(int(entity["y_min"]) - 10, 0)
+                x_max = min(int(entity["x_max"]) + 10, image.width)
+                y_max = min(int(entity["y_max"]) + 10, image.height)
+                draw.rectangle((x_min, y_min, x_max, y_max), outline=color)
+                draw.text((x_min + 10, y_min + 10), text=f"{label} ({str(round(confidence, 2))})", font=font, fill=color)
+            draw.text((8, 8), text=date_time, font=font, fill=color)
+            for label in images.keys():
+                images[label].save(image_payload, 'JPEG')
+                self.mqtt_publish(f"{action}/{label}/snapshot", image_payload.read())
+                self.mqtt_publish(f"{action}/{label}/datetime", date_time)
+
+    def deepstack_face(self, image_data, action = None):
+        predictions = self._invoke_deepstack('face/recognize', image_data)
+        if predictions:
+            date_time = dt.strftime(dt.now(), self.date_format)
+            image = Image.open(BytesIO(image_data))
+            image_payload = BytesIO()
+            font = ImageFont.truetype(font='/fonts/noto.ttf', size=24)
+            for entity in predictions:
+                user_id = entity['userid']
+                confidence = entity['confidence']
+                log.info(f"{user_id} was detected by Deepstack with {str(round(confidence, 2))} confidence.")
+                x_min = max(int(entity["x_min"]) - 10, 0)
+                y_min = max(int(entity["y_min"]) - 10, 0)
+                x_max = min(int(entity["x_max"]) + 10, image.width)
+                y_max = min(int(entity["y_max"]) + 10, image.height)
+                image_crop = image.crop((x_min, y_min, x_max, y_max))
+                image_crop.save(image_payload, 'JPEG')
+                self.mqtt_publish(f"{action}/{user_id}/snapshot", image_payload.read())
+                self.mqtt_publish(f"{action}/{user_id}/confidence", confidence)
+                self.mqtt_publish(f"{action}/{user_id}/datetime", date_time)
+
 foscam = Foscam2MQTT(listen_url = config.listen_url, obfuscate = config.obfuscate, paranoid = config.paranoid)
 foscam.date_format = config.date_format
 foscam.foscam_host = config.foscam_host
 foscam.foscam_port = config.foscam_port
 foscam.foscam_user = config.foscam_user
 foscam.foscam_pass = config.foscam_pass
+
+foscam.deepstack_url = config.deepstack_url
+foscam.deepstack_api_key = config.deepstack_api_key
+
 foscam.update_hooks()
 
 # Build MQTT config
@@ -593,14 +691,22 @@ def webhook():
 
     log.info(f"{req.method} {action} - {req.remote_addr}")
 
+    image_data = foscam.snapshot()
+
     foscam.mqtt_publish('action', action, retain=False)
     foscam.mqtt_publish(f"{action}_datetime", dt.strftime(dt.now(), foscam.date_format))
 
-    foscam.mqtt_publish('snapshot', foscam.snapshot())
+    foscam.mqtt_publish('snapshot', image_data)
     foscam.mqtt_publish('snapshot/datetime', dt.strftime(dt.now(), foscam.date_format))
 
     if foscam.ha_discovery:
         foscam.mqtt_publish(f"{action}/trigger", foscam.trigger_payload, retain = False)
+
+    if config.deepstack_face and verified_action in ['face', 'button']:
+        foscam.deepstack_face(image_data, verified_action)
+
+    elif config.deepstack_object and verified_action in ['motion', 'sound']:
+        foscam.deepstack_object(image_data, verified_action)
 
     if foscam.obfuscate and foscam.paranoid:
         log.info('Paranoid enabled, cycling webhook')
