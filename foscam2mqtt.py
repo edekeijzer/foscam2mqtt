@@ -122,12 +122,17 @@ class Foscam2MQTT:
             return False
 
     def invoke_foscam(self, cmd, options = None, return_response = False):
-        foscam_url = f"http://{self.foscam_host}:{str(self.foscam_port)}/cgi-bin/CGIProxy.fcgi?usr={self.foscam_user}&pwd={self.foscam_pass}&cmd={cmd}"
+        foscam_url = f"http://{self.foscam_host}:{str(self.foscam_port)}/cgi-bin/CGIProxy.fcgi"
+        params = {
+            'usr': self.foscam_user,
+            'pwd': self.foscam_pass,
+            'cmd': cmd,
+        }
         if options:
-            for key,value in options.items():
-                foscam_url += f"&{key}={value}"
+            params.update(options)
         try:
-            response = requests.get(foscam_url, timeout = 15, verify = False)
+            response = requests.get(foscam_url, params = params, timeout = 15, verify = False)
+            log.debug(f"Request URL: {response.url}")
             response.raise_for_status()
         except requests.exceptions.HTTPError as errh:
             if response.status_code == 404:
