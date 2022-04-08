@@ -54,13 +54,13 @@ If you want the server to auto-configure your Foscam device, please make sure yo
 ## To do
 
 - [x] Build and publish to a Docker repository
-- [ ] Check/adjust if alerting to URL is enabled in Foscam device
+- [x] Check/adjust if alerting to URL is enabled in Foscam device
 - [ ] Poll for device settings periodically
 - [ ] Add more settings (in order of appearance)
   - [x] Reboot button
   - [x] Mirror/flip screen
   - [x] Status LED
-  - [ ] Night mode (on/off/auto)
+  - [x] Night mode (on/off/auto)
   - [ ] Speaker volume (if anybody has a clue about the CGI cmd, please let me know!)
   - [ ] Sensitivity for detection options
-- [ ] Send detected faces to Deepstack
+- [x] Send detected faces to Deepstack
