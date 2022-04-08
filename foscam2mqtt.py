@@ -172,6 +172,21 @@ class Foscam2MQTT:
         foscam_options = dict()
         alarm_urls = xmlparse(self.invoke_foscam(cmd='getAlarmHttpServer', return_response=True))['CGI_Result']
 
+        # For each detection option, retrieve settings, enable URL trigger and push settings
+        for foscam_cmd in ('MotionDetect', 'FaceDetect', 'AudioAlarm'):
+            foscam_options = xmlparse(self.invoke_foscam(cmd=f"get{foscam_cmd}Config", return_response=True))['CGI_Result']
+            foscam_options['result'] = None
+            is_enabled = foscam_options['isEnable']
+            # URL is bit 9 in the linkage option.
+            # If this detection is already enabled, bitwise OR the URL option into it. Otherwise, enable it and set linkage to only URL.
+            if is_enabled:
+                linkage = int(foscam_options['linkage']) | 512
+            else:
+                foscam_options['isEnable'] = 1
+                linkage = 512
+            foscam_options['linkage'] = linkage
+            self.invoke_foscam(cmd=f"set{foscam_cmd}Config", options = foscam_options)
+
         for action_name, alias in action_aliases.items():
             if self.obfuscate:
                 if triggered_action is None or triggered_action == action_name:
@@ -229,7 +244,7 @@ class Foscam2MQTT:
             log.info(f"Camera name is {self.ha_device_name}")
 
         self.mqtt_client.on_connect = self.mqtt_on_connect
-        self.mqtt_client.on_message = self.mqtt_on_message
+        # self.mqtt_client.on_message = self.mqtt_on_message
 
         log.info(f"Connect to MQTT broker {self.mqtt_host}:{str(self.mqtt_port)}")
         self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
@@ -251,6 +266,9 @@ class Foscam2MQTT:
 
         log.debug(f"Add callback for topic {self.mqtt_gen_topic('image/flip/set')}")
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('image/flip/set'), self.mqtt_on_image_flip_set)
+
+        log.debug(f"Add callback for topic {self.mqtt_gen_topic('night_mode/set')}")
+        self.mqtt_client.message_callback_add(self.mqtt_gen_topic('night_mode/set'), self.mqtt_on_night_mode_set)
 
         log.debug(f"Add callback for topic {self.mqtt_gen_topic('reboot')}")
         self.mqtt_client.message_callback_add(self.mqtt_gen_topic('reboot'), self.mqtt_on_reboot)
@@ -303,7 +321,7 @@ class Foscam2MQTT:
         }
 
         # Add icon except for specific types
-        if entity_type not in ['device_trigger']: entity['ic'] = icon
+        if entity_type not in ['device_automation']: entity['ic'] = icon
 
         # Add type specific params if specified
         if params: entity.update(params)
@@ -422,6 +440,17 @@ class Foscam2MQTT:
         msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} image flip", action = action, entity_type = 'switch', device = device, params = params)
         msgs.append(msg)
 
+        # Night mode select
+        action = 'night_mode'
+        params = {
+            'ic': 'mdi:led-on',
+            'stat_t': self.mqtt_gen_topic(action),
+            'cmd_t': self.mqtt_gen_topic(f"{action}/set"),
+            'options': ('on', 'off', 'auto')
+        }
+        msg = self.mqtt_gen_ha_entity(name = f"{self.ha_device_name} night mode", action = action, entity_type = 'select', device = device, params = params)
+        msgs.append(msg)
+
         # Snapshot button
         action = 'update_snapshot'
         params = { 'ic': 'mdi:camera', 'cmd_t': self.mqtt_gen_topic('snapshot/update'), 'cmd_tpl': f"{{{{ now().strftime('{self.date_format}') }}}}" }
@@ -456,13 +485,13 @@ class Foscam2MQTT:
         # Do this in on_connect so they will be re-subscribed on a reconnect
         log.info('MQTT Connected')
 
-        client.subscribe(self.mqtt_gen_topic('ring_volume/set'))
-        client.subscribe(self.mqtt_gen_topic('status_led/set'))
-        client.subscribe(self.mqtt_gen_topic('image/hdr/set'))
-        client.subscribe(self.mqtt_gen_topic('image/mirror/set'))
-        client.subscribe(self.mqtt_gen_topic('image/flip/set'))
-        client.subscribe(self.mqtt_gen_topic('hooks/update'))
-        client.subscribe(self.mqtt_gen_topic('snapshot/update'))
+        # client.subscribe(self.mqtt_gen_topic('ring_volume/set'))
+        # client.subscribe(self.mqtt_gen_topic('status_led/set'))
+        # client.subscribe(self.mqtt_gen_topic('image/hdr/set'))
+        # client.subscribe(self.mqtt_gen_topic('image/mirror/set'))
+        # client.subscribe(self.mqtt_gen_topic('image/flip/set'))
+        # client.subscribe(self.mqtt_gen_topic('hooks/update'))
+        # client.subscribe(self.mqtt_gen_topic('snapshot/update'))
 
         log.debug(f"Publish 1 to topic {self.mqtt_gen_topic('$state')}")
         self.mqtt_publish('$state', 1, qos = 2)
@@ -470,6 +499,20 @@ class Foscam2MQTT:
         status_led = int(xmlparse(self.invoke_foscam(cmd='getLedEnableState', return_response=True))['CGI_Result']['isEnable'])
         log.debug(f"Retrieved status LED setting from device: {str(status_led)}")
         self.mqtt_publish('status_led', status_led)
+
+        infra_led_mode = int(xmlparse(self.invoke_foscam(cmd='getInfraLedConfig', return_response=True))['CGI_Result']['mode'])
+        log.debug(f"Retrieved infra LED mode from device: {str(infra_led_mode)} (0 = auto, 1 = manual)")
+        if infra_led_mode == 0:
+            night_mode = 'auto'
+        else:
+            infra_led_state = int(xmlparse(self.invoke_foscam(cmd='getDevState', return_response=True))['CGI_Result']['infraLedState'])
+            log.debug(f"Retrieved infra LED state from device: {str(infra_led_state)}")
+            if infra_led_state == 1:
+                night_mode = 'on'
+            else:
+                night_mode = 'off'
+        log.debug(f"Night mode: {night_mode}")
+        self.mqtt_publish('night_mode', night_mode)
 
         ring_volume = int(xmlparse(self.invoke_foscam(cmd='getAudioVolume', return_response=True))['CGI_Result']['volume'])
         log.debug(f"Retrieved volume setting from device: {str(ring_volume)}")
@@ -529,6 +572,21 @@ class Foscam2MQTT:
         foscam_options = { 'isFlip': str(image_flip) }
         self.invoke_foscam(cmd = 'flipVideo', options = foscam_options)
         self.mqtt_publish('image/flip', image_flip)
+
+    def mqtt_on_night_mode_set(self, client, userdata, msg):
+        night_mode = msg.payload.decode('ascii')
+        log.debug(f"Topic night_mode/set was triggered, state: {night_mode}")
+        if night_mode == 'auto':
+            foscam_options = { 'mode': 0 }
+            self.invoke_foscam(cmd = 'setInfraLedConfig', options = foscam_options)
+        else:
+            foscam_options = { 'mode': 1 }
+            self.invoke_foscam(cmd = 'setInfraLedConfig', options = foscam_options)
+            if night_mode == 'on':
+                self.invoke_foscam(cmd = 'openInfraLed')
+            else:
+                self.invoke_foscam(cmd = 'closeInfraLed')
+        self.mqtt_publish('night_mode', night_mode)
 
     def mqtt_on_reboot(self, client, userdata, msg):
         log.debug(f"Topic reboot was triggered")
