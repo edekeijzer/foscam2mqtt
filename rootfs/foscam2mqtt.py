@@ -98,11 +98,19 @@ class Foscam2MQTT:
         else:
             self.trigger_payload = 1
 
-        # Foscam settings
+        # Foscam connection settings
         self.foscam_host = None
         self.foscam_port = None
         self.foscam_user = None
         self.foscam_pass = None
+
+        # Foscam device settings
+        self.foscam_status_led = None
+        self.foscam_night_mode = None
+        self.foscam_ring_volume = None
+        self.foscam_image_hdr = None
+        self.foscam_mirror = None
+        self.foscam_flip = None
 
         # MQTT settings
         self.mqtt_host = 'localhost'
@@ -116,7 +124,6 @@ class Foscam2MQTT:
         self.ha_discovery = False
         self.ha_discovery_topic = 'homeassistant'
         self.ha_device_name = 'Foscam VD1'
-
 
         # Deepstack settings
         self.deepstack_url = None
@@ -161,6 +168,71 @@ class Foscam2MQTT:
             log.warning(err)
             return False
         if return_response: return response.content
+
+    def update_foscam_settings(self):
+        _any_change = False
+
+        _status_led = int(xmlparse(self.invoke_foscam(cmd='getLedEnableState', return_response=True))['CGI_Result']['isEnable'])
+        log.debug(f"Retrieved status LED setting from device: {str(_status_led)}")
+        if _status_led != self.foscam_status_led:
+            self.self.foscam_status_led = _status_led
+            self.mqtt_publish('status_led', _status_led)
+            _any_change = True
+
+        infra_led_mode = int(xmlparse(self.invoke_foscam(cmd='getInfraLedConfig', return_response=True))['CGI_Result']['mode'])
+        log.debug(f"Retrieved infra LED mode from device: {str(infra_led_mode)} (0 = auto, 1 = manual)")
+        if infra_led_mode == 0:
+            _night_mode = 'auto'
+        else:
+            infra_led_state = int(xmlparse(self.invoke_foscam(cmd='getDevState', return_response=True))['CGI_Result']['infraLedState'])
+            log.debug(f"Retrieved infra LED state from device: {str(infra_led_state)}")
+            if infra_led_state == 1:
+                _night_mode = 'on'
+            else:
+                _night_mode = 'off'
+        log.debug(f"Night mode: {_night_mode}")
+        if _night_mode != self.foscam_night_mode:
+            self.foscam_night_mode = _night_mode
+            self.mqtt_publish('night_mode', _night_mode)
+            _any_change = True
+
+        _ring_volume = int(xmlparse(self.invoke_foscam(cmd='getAudioVolume', return_response=True))['CGI_Result']['volume'])
+        log.debug(f"Retrieved volume setting from device: {str(_ring_volume)}")
+        if self.foscam_ring_volume != _ring_volume:
+            self.foscam_ring_volume = _ring_volume
+            self.mqtt_publish('ring_volume', _ring_volume)
+            _any_change = True
+
+        _image_hdr = int(xmlparse(self.invoke_foscam(cmd='getHdrMode', return_response=True))['CGI_Result']['mode'])
+        log.debug(f"Retrieved image HDR setting from device: {str(_image_hdr)}")
+        if self.foscam_image_hdr != _image_hdr:
+            self.self.foscam_image_hdr = _image_hdr
+            self.mqtt_publish('image/hdr', _image_hdr)
+            _any_change = True
+
+        _image_mirror_flip = xmlparse(self.invoke_foscam(cmd='getMirrorAndFlipSetting', return_response=True))['CGI_Result']
+        _image_mirror = _image_mirror_flip['isMirror']
+        _image_flip = _image_mirror_flip['isFlip']
+        log.debug(f"Retrieved image mirror/flip settings from device, mirror: {str(_image_mirror)}, flip: {str(_image_flip)}")
+        if self.foscam_image_mirror != _image_mirror:
+            self.foscam_image_mirror = _image_mirror
+            self.mqtt_publish('image/mirror', _image_mirror)
+            _any_change = True
+        if self.foscam_image_flip != _image_flip:
+            self.foscam_image_flip = _image_flip
+            self.mqtt_publish('image/flip', _image_flip)
+            _any_change = True
+
+        if _any_change:
+            _settings = dict()
+            _settings['status_led'] = _status_led
+            _settings['night_mode'] = _night_mode
+            _settings['ring_volume'] = _ring_volume
+            _settings['image_hdr'] = _image_hdr
+            _settings['image_mirror'] = _image_mirror
+            _settings['image_flip'] = _image_flip
+            settings_json = json_dumps(_settings)
+            self.mqtt_publish('settings', settings_json)
 
     def snapshot(self):
         snapshot = self.invoke_foscam(cmd = 'snapPicture2', return_response = True)
@@ -496,38 +568,7 @@ class Foscam2MQTT:
         log.debug(f"Publish 1 to topic {self.mqtt_gen_topic('$state')}")
         self.mqtt_publish('$state', 1, qos = 2)
 
-        status_led = int(xmlparse(self.invoke_foscam(cmd='getLedEnableState', return_response=True))['CGI_Result']['isEnable'])
-        log.debug(f"Retrieved status LED setting from device: {str(status_led)}")
-        self.mqtt_publish('status_led', status_led)
-
-        infra_led_mode = int(xmlparse(self.invoke_foscam(cmd='getInfraLedConfig', return_response=True))['CGI_Result']['mode'])
-        log.debug(f"Retrieved infra LED mode from device: {str(infra_led_mode)} (0 = auto, 1 = manual)")
-        if infra_led_mode == 0:
-            night_mode = 'auto'
-        else:
-            infra_led_state = int(xmlparse(self.invoke_foscam(cmd='getDevState', return_response=True))['CGI_Result']['infraLedState'])
-            log.debug(f"Retrieved infra LED state from device: {str(infra_led_state)}")
-            if infra_led_state == 1:
-                night_mode = 'on'
-            else:
-                night_mode = 'off'
-        log.debug(f"Night mode: {night_mode}")
-        self.mqtt_publish('night_mode', night_mode)
-
-        ring_volume = int(xmlparse(self.invoke_foscam(cmd='getAudioVolume', return_response=True))['CGI_Result']['volume'])
-        log.debug(f"Retrieved volume setting from device: {str(ring_volume)}")
-        self.mqtt_publish('ring_volume', ring_volume)
-
-        image_hdr = int(xmlparse(self.invoke_foscam(cmd='getHdrMode', return_response=True))['CGI_Result']['mode'])
-        log.debug(f"Retrieved image HDR setting from device: {str(image_hdr)}")
-        self.mqtt_publish('image/hdr', image_hdr)
-
-        _image_mirror_flip = xmlparse(self.invoke_foscam(cmd='getMirrorAndFlipSetting', return_response=True))['CGI_Result']
-        image_mirror = _image_mirror_flip['isMirror']
-        image_flip = _image_mirror_flip['isFlip']
-        log.debug(f"Retrieved image mirror/flip settings from device, mirror: {str(image_mirror)}, flip: {str(image_flip)}")
-        self.mqtt_publish('image/mirror', image_mirror)
-        self.mqtt_publish('image/flip', image_flip)
+        self.update_foscam_settings()
 
     # The callback for when a PUBLISH message is received from the server.
     def mqtt_on_message(self, client, userdata, msg):
@@ -758,6 +799,7 @@ def webhook():
     foscam.mqtt_publish('snapshot/datetime', dt.strftime(dt.now(), foscam.date_format))
 
     if foscam.ha_discovery:
+        log.debug(f"Publishing payload {foscam.trigger_payload} to topic {action}/trigger")
         foscam.mqtt_publish(f"{action}/trigger", foscam.trigger_payload, retain = False)
 
     if config.deepstack_face and verified_action in ['face', 'button']:
